@@ -1018,7 +1018,7 @@ grep -rn "!important" src/styles/main.css      # 期望 ≤ 4（仅 reduced-moti
 
 ### 15.1 回滚
 
-- 仓库：`https://github.com/wenh56884-wq/bigdata`，工作分支 `v2`。
+- 仓库：`https://github.com/wenh56884-wq/9sky`，分支 `main`（**推送与隐私规则单点维护在 [docs/REPO-PUSH.md](REPO-PUSH.md)，本小节若与它冲突以它为准**）。
 - 开工前打基线：`git add -A && git commit -m "chore: 前端改造前基线"`。
 - 某个阶段门禁没过：`git restore frontend/src/styles/main.css`（或 `git restore frontend/`）回到上一提交，**不要带着失败状态继续叠加**。
 - `main.css` 是唯一的全局视觉入口，回滚它即可恢复旧视觉；组件改动按文件粒度回滚。
@@ -1030,8 +1030,10 @@ grep -rn "!important" src/styles/main.css      # 期望 ≤ 4（仅 reduced-moti
 
 | 分支 | 内容 | 说明 |
 |---|---|---|
-| `main` | 2026-09-28 的**旧扁平结构**（`core/` `services/` `web.py` `index.html`） | 仅作历史归档，**不要在其上施工**，也不要强推覆盖 |
-| `v2` | 当前四域结构（`backend/` `frontend/` `infra/` `docs/`） | 唯一活跃分支；本文所有改动推到这里 |
+| `main`（`9sky`） | 当前四域结构（`backend/` `frontend/` `infra/` `docs/`） | **唯一活跃分支**；本文所有改动推到这里 |
+| `v2`（旧 `bigdata`） | 同上，是迁移前的历史 | 旧仓库已停用，**不要再推**，仅作留档 |
+
+> 2026-11-12 起，远程仓库从 `wenh56884-wq/bigdata` 迁到 `wenh56884-wq/9sky`，本地分支同步由 `v2` 更名为 `main`。`bigdata` 上的 `main` 是 2026-09-28 的旧扁平结构，只作历史归档。
 
 **每次改完都推送（用户的常驻要求）**
 
@@ -1039,7 +1041,7 @@ grep -rn "!important" src/styles/main.css      # 期望 ≤ 4（仅 reduced-moti
 cd "C:/Users/22124/Desktop/发布包/九天梧桐AI工作台"
 git add -A
 git commit -m "feat(ui): 阶段2 侧栏分组与折叠"     # 约定见下
-git push origin v2
+git push origin main
 ```
 
 提交信息规范：`type(scope): 说明`，`type` ∈ `feat|fix|style|docs|chore|refactor`，`scope` ∈ `ui|chat|sidebar|composer|docs|repo`。
@@ -1102,6 +1104,20 @@ git diff --cached --stat | tail -3           # 确认改动范围符合预期
 3. "再答一次"为什么不叫"重新生成"？（答：后端每轮追加历史，叫重新生成会误导）
 4. 助手消息为什么去掉气泡？（答：长文档阅读与专业感，同时减少渐变撞脸）
 5. 换租户主色时，需要改几个变量？（答：只改 `--brand-600`，其余由 §8.2 推导）
+
+---
+
+## 17. 仓库与交付约定（指针）
+
+仓库已于 2026-11-12 迁移到 **`https://github.com/wenh56884-wq/9sky`**（公开仓库，分支 `main`）。`.gitignore` 中「详见 §17」的引用指向本节。
+
+本节的完整内容（仓库地址、每次推送流程、隐私与体积红线、提交信息规范、推送前四条自检、密钥泄露与大文件事故处理、基线快照）**单点维护在 [docs/REPO-PUSH.md](REPO-PUSH.md)**，此处不再复制，避免两份规则漂移。
+
+三条最容易踩的，先记住：
+
+1. **仓库是公开的** —— 推上去就等于对外发布，`.env`、`backend/data/`、`backend/knowledge/自动学习/`、`infra/sql/*.sql` 一律不得入库，也不许 `git add -f` 绕过。
+2. **每次改完就推**，推之前跑 `docs/REPO-PUSH.md` §5 的四条 grep 自检，有输出就停。
+3. **`infra/sql` 三份转储（380MB / 107MB / 80MB）超过 GitHub 单文件上限**，走 Release 附件，不要试图入库、也不要用 LFS。
 
 ---
 

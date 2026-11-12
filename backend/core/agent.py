@@ -96,12 +96,21 @@ rag_service = RagService()
 
 # 标准 LangChain / LangGraph 执行路径使用官方 HITL middleware。自定义流式循环
 # 在实际调用工具前也复用 services.hitl 的审批闸门，保证网页主入口同样受保护。
-HITL_MIDDLEWARE = ([HumanInTheLoopMiddleware({
-    "forget": {
-        "allowed_decisions": ["approve", "reject", "edit"],
-        "description": "此操作将删除跨会话长期记忆，删除后无法恢复。请确认是否执行。",
-    },
-})] if hitl.enabled() else [])
+# 受保护工具清单与风险等级由 hitl 统一维护（forget=high、forecast_metric/plot_last_result=low）。
+def _build_hitl_middleware() -> list:
+    if not hitl.enabled():
+        return []
+    config = {
+        tool_name: {
+            "allowed_decisions": ["approve", "reject", "edit"],
+            "description": hitl.description_for(tool_name),
+        }
+        for tool_name in hitl.PROTECTED_TOOLS
+    }
+    return [HumanInTheLoopMiddleware(config)]
+
+
+HITL_MIDDLEWARE = _build_hitl_middleware()
 
 
 class WorkspaceAgentState(AgentState):
@@ -4082,7 +4091,7 @@ class ChatService:
         return {"thread_id": thread_id, "answer": answer, "messages": self.history(thread_id)}
 
     def stream_ask(self, thread_id: str | None, question: str, skill: str = "",
-                   model: str = "") -> Iterator[dict]:
+                   model: str = "", operator_id: str = "") -> Iterator[dict]:
         """在指定会话中提问，逐 token 产出流式事件（本项目的**唯一执行引擎**）。
 
         Agent = LLM(大脑) + Planning(规划) + Tool use(执行) + Memory(记忆)，五步走：
@@ -4328,7 +4337,7 @@ class ChatService:
                             if hitl.requires_approval(name):
                                 approval = hitl.manager.create(
                                     thread_id, name, call.get("args") or {},
-                                    "此操作将删除跨会话长期记忆，删除后无法恢复。请确认是否执行。",
+                                    "", operator_id,
                                 )
                                 yield {
                                     "type": "approval_required",
@@ -4337,6 +4346,8 @@ class ChatService:
                                     "tool": name,
                                     "args": approval.args,
                                     "description": approval.description,
+                                    "risk_level": approval.risk_level,
+                                    "stage": approval.stage,
                                     "allowed_decisions": ["approve", "reject", "edit"],
                                 }
                                 review = hitl.manager.wait(approval)

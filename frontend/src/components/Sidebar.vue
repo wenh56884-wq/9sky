@@ -3,11 +3,15 @@ import { ref, computed } from 'vue'
 import { useConversationsStore } from '../stores/conversations'
 import { useChatStore } from '../stores/chat'
 import { useConfigStore } from '../stores/config'
+import { useAuthStore, ROLE_LABELS } from '../stores/auth'
+import { useNav } from '../composables/useNav'
 import { useHealth } from '../composables/useHealth'
 
 const conv = useConversationsStore()
 const chat = useChatStore()
 const config = useConfigStore()
+const auth = useAuthStore()
+const nav = useNav()
 const { state: health } = useHealth()
 
 const search = ref('')
@@ -91,6 +95,14 @@ function onRenameKey(e, id) {
   if (e.key === 'Enter') commitRename(id, e.target.value)
   if (e.key === 'Escape') conv.cancelRename()
 }
+
+async function logout() {
+  await auth.logout()
+}
+
+function openUsers() {
+  nav.setView('users')
+}
 </script>
 
 <template>
@@ -103,7 +115,7 @@ function onRenameKey(e, id) {
       </div>
     </div>
 
-    <button type="button" class="new-chat" @click="createChat">
+    <button type="button" class="new-chat" v-if="auth.can(2)" @click="createChat">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
       新建对话
     </button>
@@ -117,7 +129,7 @@ function onRenameKey(e, id) {
       <span>历史会话</span>
       <span class="conv-head-right">
         <span class="count-mini" v-if="conv.list.length">{{ conv.list.length }} 个</span>
-        <button type="button" class="conv-clear" title="一键清空左侧全部会话（聊天记录一并删除，长期记忆保留）" @click="clearAll">清空会话</button>
+        <button type="button" class="conv-clear" v-if="auth.can(2)" title="一键清空左侧全部会话（聊天记录一并删除，长期记忆保留）" @click="clearAll">清空会话</button>
       </span>
     </p>
 
@@ -143,12 +155,29 @@ function onRenameKey(e, id) {
           @click="select(item.id)"
           @dblclick="startRename(item.id)"
         >{{ item.title }}</span>
-        <button type="button" class="conv-del" title="删除会话" @click.stop="remove(item.id)">×</button>
+        <button type="button" class="conv-del" v-if="auth.can(2)" title="删除会话" @click.stop="remove(item.id)">×</button>
       </li>
       <li v-if="!filtered.length && search" class="no-conversations">没有匹配的会话</li>
     </ul>
 
+    <div class="side-nav" v-if="auth.can(2)">
+      <button type="button" class="side-nav-btn" @click="nav.openApprovalCenter()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
+        审批中心
+        <span v-if="nav.state.approvalPending" class="nav-badge">{{ nav.state.approvalPending }}</span>
+      </button>
+      <button type="button" class="side-nav-btn" v-if="auth.isSuper" @click="openUsers">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        用户管理
+      </button>
+    </div>
+
     <div class="side-foot">
+      <div class="user-chip">
+        <span class="user-name">{{ auth.user ? auth.user.username : '' }}</span>
+        <span class="user-role">{{ ROLE_LABELS[auth.role] || '访客' }}</span>
+        <button type="button" class="user-logout" title="退出登录" @click="logout">登出</button>
+      </div>
       <div class="status-line" :class="{ off: !health.ok }">
         <span class="dot"></span>
         <span>{{ health.sideText }}</span>

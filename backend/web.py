@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, g, jsonify, request, send_from_directory
 
 from core.agent import (
     ChatService,
@@ -22,6 +22,8 @@ from core.agent import (
     search_memories,
 )
 from services.ops import hitl, debugging
+from services.ops import auth as auth_service
+from services.ops.auth import require_auth, require_role
 
 app = Flask(__name__)
 # 上传大小上限（要略大于单文件上限，留给 multipart 的开销）
@@ -88,19 +90,105 @@ def health():
     return jsonify({"ok": True, **service.info()})
 
 
+# ------------------------------- 认证接口 ------------------------------- #
+@app.post("/api/auth/login")
+def auth_login():
+    """公开接口：账号密码登录，签发会话令牌。"""
+    payload = _json_payload()
+    try:
+        result = auth_service.login(
+            payload.get("username", ""), payload.get("password", "")
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 401
+    return jsonify(result)
+
+
+@app.post("/api/auth/logout")
+@require_auth
+def auth_logout():
+    auth_service.logout(g.current_token)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/auth/me")
+@require_auth
+def auth_me():
+    return jsonify({"user": g.current_user})
+
+
+@app.post("/api/auth/change-password")
+@require_auth
+def auth_change_password():
+    payload = _json_payload()
+    try:
+        auth_service.change_password(
+            g.current_user_id, payload.get("old_password", ""), payload.get("new_password", "")
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True})
+
+
+@app.get("/api/auth/users")
+@require_role(3)
+def auth_users_list():
+    """用户列表（超管）。"""
+    return jsonify({"users": auth_service.list_users()})
+
+
+@app.post("/api/auth/users")
+@require_role(3)
+def auth_users_create():
+    payload = _json_payload()
+    try:
+        user = auth_service.create_user(
+            payload.get("username", ""), payload.get("password", ""), payload.get("role", 1)
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"user": user}), 201
+
+
+@app.patch("/api/auth/users/<user_id>")
+@require_role(3)
+def auth_users_patch(user_id):
+    payload = _json_payload()
+    try:
+        user = auth_service.update_user(
+            user_id, role=payload.get("role"), password=payload.get("password")
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"user": user})
+
+
+@app.delete("/api/auth/users/<user_id>")
+@require_role(3)
+def auth_users_delete(user_id):
+    try:
+        auth_service.delete_user(user_id, self_id=g.current_user_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"deleted": user_id})
+
+
 @app.get("/api/models")
+@require_auth
 def model_list():
     """只暴露强推理/强代码模型白名单，默认模型排第一。"""
     return jsonify({"models": available_models(), "default": resolve_model()})
 
 
 @app.get("/api/skills")
+@require_auth
 def skill_list():
     """列出可手动选择的数据查询技能卡（库 key + 中文名 + 就绪状态），供前端下拉选择。"""
     return jsonify({"skills": db_skill_cards()})
 
 
 @app.get("/reports/<path:filename>")
+@require_auth
 def reports_file(filename):
     """供网页展示 reports/ 目录下的图表 PNG（只放行顶层 *.png，防目录穿越）。"""
     name = Path(filename).name
@@ -116,17 +204,20 @@ def reports_file(filename):
 
 # --------------------------- 会话（thread）管理 --------------------------- #
 @app.get("/api/conversations")
+@require_auth
 def list_conversations():
     return jsonify({"conversations": service.list_conversations()})
 
 
 @app.post("/api/conversations")
+@require_role(2)
 def create_conversation():
     title = (_json_payload().get("title") or "").strip()
     return jsonify({"conversation": service.new_conversation(title or None)}), 201
 
 
 @app.get("/api/conversations/<thread_id>/messages")
+@require_auth
 def conversation_messages(thread_id):
     """会话完整历史 + 最近的执行计划（plan），便于刷新页面后仍能看到计划进度。"""
     item = service.store.get(thread_id)
@@ -141,6 +232,7 @@ def conversation_messages(thread_id):
 
 
 @app.patch("/api/conversations/<thread_id>")
+@require_role(2)
 def rename_conversation(thread_id):
     title = (_json_payload().get("title") or "").strip()
     if not title:
@@ -152,12 +244,14 @@ def rename_conversation(thread_id):
 
 
 @app.delete("/api/conversations")
+@require_role(2)
 def clear_conversations():
     """一键清空全部会话（元数据 + Checkpointer 里的对话历史；跨会话长期记忆保留）。"""
     return jsonify({"cleared": service.clear_conversations()})
 
 
 @app.delete("/api/conversations/<thread_id>")
+@require_role(2)
 def delete_conversation(thread_id):
     item = service.delete_conversation(thread_id)
     if not item:
@@ -167,6 +261,7 @@ def delete_conversation(thread_id):
 
 # ----------------------- 跨会话长期记忆（Store）----------------------- #
 @app.get("/api/memory")
+@require_auth
 def memory_list():
     """列出全局共享 Store 里的跨会话记忆。
 
@@ -180,14 +275,26 @@ def memory_list():
 
 
 @app.delete("/api/memory/<key>")
+@require_role(2)
 def memory_delete(key):
     delete_memory(key)
     return jsonify({"deleted": key})
 
 
+@app.get("/api/approvals")
+@require_role(2)
+def approval_list():
+    """待审批列表（管理员/超管）。"""
+    return jsonify({"items": hitl.manager.list_pending()})
+
+
 @app.post("/api/approvals/<approval_id>")
+@require_auth
 def approval_decide(approval_id):
-    """批准、拒绝或编辑一条正在等待的 Agent 高风险操作。"""
+    """批准、拒绝或编辑一条正在等待的 Agent 受保护操作。
+
+    按层级鉴权：低风险单级仅操作者本人可决策；高风险双级需管理员（角色≥2）。
+    """
     payload = _json_payload()
     try:
         result = hitl.manager.resolve(
@@ -195,8 +302,12 @@ def approval_decide(approval_id):
             payload.get("decision") or "",
             payload.get("message") or "",
             payload.get("args"),
+            user_id=g.current_user_id,
+            user_role=g.current_user.get("role"),
         )
-    except ValueError as exc:
+    except hitl.ApprovalForbidden as exc:
+        return jsonify({"error": str(exc)}), 403
+    except (hitl.ApprovalError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
     if result is None:
         return jsonify({"error": "审批不存在、已处理或已超时。"}), 404
@@ -205,6 +316,7 @@ def approval_decide(approval_id):
 
 # -------------------- 管理员上传：统一目录 + 落盘即解析 -------------------- #
 @app.get("/api/uploads")
+@require_auth
 def upload_list():
     """列出统一上传目录（data/uploads）里的文件。"""
     try:
@@ -219,6 +331,7 @@ def upload_list():
 
 
 @app.post("/api/uploads")
+@require_role(2)
 def upload_create():
     """管理员上传表格文件：存进统一目录 → **立即解析 → 写记忆 → 重建索引**。
 
@@ -247,6 +360,7 @@ def upload_create():
 
 
 @app.get("/api/uploads/<path:name>/preview")
+@require_auth
 def upload_preview(name):
     """查看上传后的实际内容：表格行列、文档正文或图片 OCR 文本。"""
     try:
@@ -259,6 +373,7 @@ def upload_preview(name):
 
 
 @app.get("/api/uploads/<path:name>/content")
+@require_auth
 def upload_image_content(name):
     """仅以内联方式返回已上传图片，供资料预览弹窗展示原图。"""
     try:
@@ -274,6 +389,7 @@ def upload_image_content(name):
 
 
 @app.delete("/api/uploads/<path:name>")
+@require_role(2)
 def upload_delete(name):
     """删除上传的文件（连带清记忆、重建索引）。"""
     token = (os.getenv("ADMIN_TOKEN") or "").strip()
@@ -291,6 +407,7 @@ def upload_delete(name):
 
 
 @app.get("/api/uploads/memory")
+@require_role(2)
 def upload_memory():
     """查看表格自动记忆（数据卡片 + 问答经验）的概况，便于管理员确认「学到了什么」。"""
     try:
@@ -301,6 +418,7 @@ def upload_memory():
 
 
 @app.delete("/api/uploads/memory")
+@require_role(2)
 def upload_memory_clear():
     token = (os.getenv("ADMIN_TOKEN") or "").strip()
     if token:
@@ -314,6 +432,7 @@ def upload_memory_clear():
 
 # ------------------------------ 对话问答 ------------------------------ #
 @app.post("/api/chat")
+@require_auth
 def chat():
     """流式问答：响应体为 NDJSON，每行一个事件（UTF-8）：
 
@@ -337,7 +456,9 @@ def chat():
     # stream_ask() 在返回生成器前完成校验与 Agent 预热，
     # 参数/配置错误在此以正常状态码返回，而不是中途断流
     try:
-        events = service.stream_ask(thread_id, question, skill=skill, model=model)
+        events = service.stream_ask(
+            thread_id, question, skill=skill, model=model, operator_id=g.current_user_id
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
@@ -355,6 +476,7 @@ def chat():
 
 
 @app.post("/api/deep")
+@require_auth
 def deep_search():
     """深度搜索（Deep Research 式）：拆子问题 → 多轮检索 → 查漏补缺 → 带引用综合回答。
 
