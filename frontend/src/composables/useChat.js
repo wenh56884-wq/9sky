@@ -29,6 +29,26 @@ function rewind(message, chars) {
   }
 }
 
+// 写变更结果事件（write_applied / write_rejected）：更新对应变更卡状态；
+// 找不到卡片（如草案生成前就被拒绝）时，把结果写进正文
+function applyWriteResult(message, evt, status) {
+  const pid = evt.proposal_id
+  const row = (message.proposals || []).find((p) => p.proposal_id && p.proposal_id === pid)
+  if (row) {
+    row.status = status
+    if (evt.execution) row.execution = evt.execution
+    if (evt.reason) row.reject_reason = evt.reason
+  } else if (status === 'rejected') {
+    const line = '已取消，未改动任何数据。'
+    message.content += (message.content ? '\n\n' : '') + line
+  } else if (status === 'applied') {
+    const rows = evt.execution && evt.execution.affected_rows != null ? evt.execution.affected_rows : null
+    const line = rows != null ? `变更已执行完成，影响 ${rows} 行。` : '变更已执行完成。'
+    message.content += (message.content ? '\n\n' : '') + line
+  }
+  if (message.status === '等待审批…') message.status = ''
+}
+
 function applyChatEvent(evt, message, showProc) {
   switch (evt.type) {
     case 'thinking':
@@ -67,6 +87,35 @@ function applyChatEvent(evt, message, showProc) {
         allowed_decisions: evt.allowed_decisions || ['approve', 'reject'],
         resolved: false,
       })
+      break
+    case 'write_proposal':
+      // §8.8：聊天区插入变更卡；后端在等待审批期间已暂停流式，前端无需额外处理
+      message.status = '等待审批…'
+      if (!message.proposals) message.proposals = []
+      message.proposals.push({
+        proposal_id: evt.proposal_id || '',
+        approval_id: evt.approval_id || '',
+        database: evt.database || '',
+        table: evt.table || '',
+        operation: evt.operation || '',
+        sql: evt.sql || '',
+        risk: evt.risk || 'L1',
+        required_role: evt.required_role || 1,
+        estimated_rows: evt.estimated_rows ?? 0,
+        preview: evt.preview || {},
+        expires_at: evt.expires_at || '',
+        status: 'pending',
+      })
+      break
+    case 'write_applied':
+      applyWriteResult(message, evt, 'applied')
+      break
+    case 'write_rejected':
+      applyWriteResult(
+        message,
+        evt,
+        evt.execution && evt.execution.ok === false ? 'failed' : 'rejected'
+      )
       break
     case 'rewind':
       rewind(message, evt.chars)

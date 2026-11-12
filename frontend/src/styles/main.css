@@ -524,6 +524,75 @@ body {
 .approval-card .ap-waiting.low { color: var(--risk-low); }
 .approval-result { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
 
+/* ---------------- 写变更卡（§8.8） ---------------- */
+.wp-card {
+  margin: 0; padding: 10px 12px; border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: var(--r-md);
+  background: var(--panel); color: var(--ink);
+}
+.wp-card.st-pending { border-left-color: var(--warn); }
+.wp-card.st-approved { border-left-color: var(--info); }
+.wp-card.st-rejected, .wp-card.st-failed { border-left-color: var(--danger); }
+.wp-card.st-applied { border-left-color: var(--ok); }
+.wp-card.st-reverted { border-left-color: var(--ink-400); }
+
+.wp-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wp-table { font-size: 14px; font-weight: 600; color: var(--ink); }
+.wp-op { font-size: 12px; border-radius: var(--r-sm); padding: 2px 8px; border: 1px solid transparent; }
+.wp-op.ins { color: var(--ok); border-color: rgba(18,161,80,.4); background: rgba(18,161,80,.10); }
+.wp-op.upd { color: var(--info); border-color: rgba(21,112,239,.4); background: rgba(21,112,239,.10); }
+.wp-op.del { color: var(--danger); border-color: rgba(217,45,32,.4); background: rgba(217,45,32,.10); }
+.wp-risk { font-size: 11px; font-weight: 600; border-radius: var(--r-sm); padding: 2px 7px; border: 1px solid transparent; }
+.wp-risk.r-L1 { color: var(--muted); border-color: var(--line-2); background: var(--ink-100); }
+.wp-risk.r-L2 { color: var(--warn); border-color: rgba(224,139,0,.4); background: rgba(224,139,0,.10); }
+.wp-risk.r-L3 { color: var(--danger); border-color: rgba(217,45,32,.4); background: rgba(217,45,32,.10); }
+.wp-status { margin-left: auto; font-size: 12px; color: var(--muted); }
+.wp-status.s-pending { color: var(--warn); }
+.wp-status.s-approved { color: var(--info); }
+.wp-status.s-rejected, .wp-status.s-failed { color: var(--danger); }
+.wp-status.s-applied { color: var(--ok); }
+.wp-status.s-reverted { color: var(--muted); }
+
+.wp-body { margin-top: 8px; }
+.wp-rows { display: flex; align-items: baseline; gap: 6px; }
+.wp-rows-num { font-size: 26px; font-weight: 700; color: var(--ink); line-height: 1.1; }
+.wp-rows-label { font-size: 12px; color: var(--muted); }
+.wp-reason { color: var(--ink-700); font-size: 13px; margin: 6px 0 0; }
+
+.wp-sql { margin-top: 8px; }
+.wp-sql summary { cursor: pointer; font-size: 12px; color: var(--accent); user-select: none; }
+.wp-sql summary:focus-visible { outline: 2px solid var(--brand-600); outline-offset: 2px; border-radius: var(--r-sm); }
+.wp-sql pre {
+  margin: 6px 0 0; background: var(--code-bg); color: var(--code-text);
+  border-radius: var(--r-sm); padding: 8px 10px; overflow-x: auto;
+  font-family: Consolas, Menlo, monospace; font-size: 12px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+.wp-diff { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+.wp-diff-head { display: grid; grid-template-columns: 1fr 1fr; background: var(--th-bg); }
+.wp-diff-head .wp-diff-col { padding: 5px 10px; font-size: 12px; color: var(--muted); }
+.wp-diff-row { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); }
+.wp-diff-cell {
+  padding: 5px 10px; font-size: 12px; color: var(--ink-700);
+  font-family: Consolas, Menlo, monospace; word-break: break-all; white-space: pre-wrap;
+}
+.wp-diff-cell.before { border-right: 1px solid var(--line); color: var(--muted); }
+.wp-diff-cell.changed { background: rgba(224,139,0,.14); color: var(--ink-900); font-weight: 600; }
+.wp-diff-note { margin: 6px 0 0; font-size: 11.5px; color: var(--muted-2); }
+.wp-diff-empty { margin: 6px 0 0; font-size: 12px; color: var(--muted-2); }
+
+.wp-actions { display: flex; gap: 8px; margin-top: 10px; }
+.wp-actions button {
+  border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 6px 12px;
+  font: inherit; font-size: 13px; cursor: pointer; background: var(--panel); color: var(--ink);
+}
+.wp-actions .approve { background: var(--ok); border-color: var(--ok); color: #fff; }
+.wp-actions .reject { color: var(--danger); }
+.wp-actions .repropose { color: var(--accent); border-color: var(--accent); }
+.wp-actions button:disabled { opacity: .55; cursor: default; }
+.wp-actions button:focus-visible { outline: 2px solid var(--brand-600); outline-offset: 2px; }
+
 /* ---------------- 消息操作条 ---------------- */
 .msg-actions { display: flex; gap: 2px; opacity: 0; transition: opacity .15s; }
 .ai-box:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
@@ -943,6 +1012,36 @@ body {
 .ap-actions .ap-reject { color: var(--err); }
 .ap-actions .ap-edit-btn { color: var(--accent); border-color: var(--accent); }
 .ap-actions button:disabled { opacity: .55; cursor: default; }
+
+/* 审批中心 tabs / 数据变更列表 / 变更历史（§8.8） */
+.ap-tabs { display: flex; gap: 4px; padding: 8px 14px 0; border-bottom: 1px solid var(--line); }
+.ap-tabs button {
+  border: 0; background: none; padding: 8px 12px; font: inherit; font-size: 13px;
+  color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; border-radius: 0;
+}
+.ap-tabs button:hover { color: var(--ink); }
+.ap-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.ap-tabs button:focus-visible { outline: 2px solid var(--brand-600); outline-offset: -2px; }
+
+.wp-list-item.selected { outline: 2px solid var(--brand-600); outline-offset: -2px; }
+.wp-list-item { cursor: pointer; }
+
+.ap-history-bar { display: flex; align-items: center; gap: 8px; padding: 2px 0 8px; }
+.ap-history-bar label { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.ap-history-bar select {
+  font: inherit; font-size: 12px; padding: 4px 8px; border: 1px solid var(--line-2);
+  border-radius: var(--r-sm); background: var(--panel); color: var(--ink);
+}
+.ap-history { border: 1px solid var(--line); border-radius: var(--r-sm); overflow: auto; }
+.ap-history table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ap-history th, .ap-history td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.ap-history td.wrap { white-space: normal; word-break: break-all; max-width: 220px; }
+.ap-history th { background: var(--th-bg); color: var(--muted); font-weight: 500; }
+.ap-history tr:last-child td { border-bottom: none; }
+.ap-history .st-applied { color: var(--ok); }
+.ap-history .st-approved { color: var(--info); }
+.ap-history .st-rejected, .ap-history .st-failed { color: var(--danger); }
+.ap-history .st-reverted { color: var(--muted); }
 
 /* ================= 12. User Management ================= */
 .um-page { height: 100vh; display: flex; flex-direction: column; background: var(--bg); }

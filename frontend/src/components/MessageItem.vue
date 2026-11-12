@@ -4,6 +4,7 @@ import MarkdownView from './MarkdownView.vue'
 import PlanPanel from './PlanPanel.vue'
 import StatusLine from './StatusLine.vue'
 import ApprovalCard from './ApprovalCard.vue'
+import WriteProposalCard from './WriteProposalCard.vue'
 import DeepTrace from './DeepTrace.vue'
 import SourceCard from './SourceCard.vue'
 
@@ -67,6 +68,14 @@ function fallbackCopy(text) {
       <PlanPanel v-if="message.plan" :plan="message.plan" />
       <StatusLine v-if="message.status" :status="message.status" />
       <ApprovalCard v-for="a in message.approvals" :key="a.approval_id" :approval="a" />
+      <WriteProposalCard
+        v-for="p in message.proposals"
+        :key="p.proposal_id"
+        :proposal="p"
+        :status="p.status"
+        :execution="p.execution"
+        @changed="(e) => { p.status = e.status; if (e.execution) p.execution = e.execution }"
+      />
       <DeepTrace v-if="message.trace" :trace="message.trace" />
 
       <div class="ai-card">
