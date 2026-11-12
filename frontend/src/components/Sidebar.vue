@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useConversationsStore } from '../stores/conversations'
 import { useChatStore } from '../stores/chat'
 import { useConfigStore } from '../stores/config'
@@ -8,6 +8,7 @@ import { useNav } from '../composables/useNav'
 import { useHealth } from '../composables/useHealth'
 import { toast } from '../composables/useToast'
 import { confirm as askConfirm } from '../composables/useConfirm'
+import { brand } from '../brand'
 
 const conv = useConversationsStore()
 const chat = useChatStore()
@@ -17,6 +18,7 @@ const nav = useNav()
 const { state: health } = useHealth()
 
 const search = ref('')
+const searchEl = ref(null)
 
 // 自动聚焦重命名输入框（<script setup> 中以 v 开头的变量即局部指令）
 const vFocus = {
@@ -27,6 +29,56 @@ const filtered = computed(() => {
   const q = search.value.trim().toLocaleLowerCase('zh-CN')
   if (!q) return conv.list
   return conv.list.filter((c) => (c.title || '').toLocaleLowerCase('zh-CN').includes(q))
+})
+
+// N6：按日期分组——今天 / 昨天 / 近 7 天 / 更早
+function startOfToday() {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+function bucketOf(item) {
+  const ts = item.updated_at || item.created_at
+  if (!ts) return '更早'
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return '更早'
+  d.setHours(0, 0, 0, 0)
+  const today = startOfToday()
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  const sevenAgo = new Date(today)
+  sevenAgo.setDate(today.getDate() - 6)
+  if (d >= today) return '今天'
+  if (d >= yesterday) return '昨天'
+  if (d >= sevenAgo) return '近 7 天'
+  return '更早'
+}
+
+const GROUP_ORDER = ['今天', '昨天', '近 7 天', '更早']
+
+const groups = computed(() => {
+  const map = {}
+  for (const key of GROUP_ORDER) map[key] = []
+  for (const item of filtered.value) {
+    const bucket = bucketOf(item)
+    if (map[bucket]) map[bucket].push(item)
+  }
+  return GROUP_ORDER.filter((key) => map[key].length).map((key) => [key, map[key]])
+})
+
+// N5：Ctrl+K（全局快捷键）→ 聚焦搜索框
+watch(() => nav.state.searchPulse, () => {
+  const el = searchEl.value
+  if (el) {
+    el.focus()
+    el.select()
+  }
+})
+
+// Esc（全局快捷键在关闭浮层后）→ 清空搜索
+watch(() => nav.state.clearSearchSignal, () => {
+  search.value = ''
 })
 
 async function loadConv(id) {
@@ -119,6 +171,10 @@ async function logout() {
 function openUsers() {
   nav.setView('users')
 }
+
+function openChanges() {
+  nav.setView('changes')
+}
 </script>
 
 <template>
@@ -126,7 +182,7 @@ function openUsers() {
     <div class="brand">
       <div class="logo">梧</div>
       <div>
-        <b>九天梧桐 AI 助手</b>
+        <b>{{ brand.name }} AI 助手</b>
         <small>业务数据 · 知识库 · 预测</small>
       </div>
     </div>
@@ -138,7 +194,13 @@ function openUsers() {
 
     <label class="conv-search" aria-label="搜索历史会话">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
-      <input v-model="search" type="search" placeholder="搜索会话" autocomplete="off">
+      <input
+        ref="searchEl"
+        v-model="search"
+        type="search"
+        placeholder="搜索会话（Ctrl + K）"
+        autocomplete="off"
+      >
     </label>
 
     <p class="conv-head">
@@ -150,29 +212,33 @@ function openUsers() {
     </p>
 
     <ul class="conv-list">
-      <li
-        v-for="item in filtered"
-        :key="item.id"
-        class="conv"
-        :class="{ active: item.id === conv.currentId }"
-      >
-        <input
-          v-if="conv.renamingId === item.id"
-          class="conv-title-input"
-          :value="item.title"
-          @keydown="(e) => onRenameKey(e, item.id)"
-          @blur="commitRename(item.id, $event.target.value)"
-          v-focus
-        />
-        <span
-          v-else
-          class="conv-title"
-          :title="[item.title, item.message_count + ' 条消息', '双击重命名'].join(' · ')"
-          @click="select(item.id)"
-          @dblclick="startRename(item.id)"
-        >{{ item.title }}</span>
-        <button type="button" class="conv-del" v-if="auth.can(2)" title="删除会话" @click.stop="remove(item.id)">×</button>
-      </li>
+      <template v-for="[label, items] in groups" :key="label">
+        <!-- N6：分组标题 sticky -->
+        <li class="conv-group">{{ label }}</li>
+        <li
+          v-for="item in items"
+          :key="item.id"
+          class="conv"
+          :class="{ active: item.id === conv.currentId }"
+        >
+          <input
+            v-if="conv.renamingId === item.id"
+            class="conv-title-input"
+            :value="item.title"
+            @keydown="(e) => onRenameKey(e, item.id)"
+            @blur="commitRename(item.id, $event.target.value)"
+            v-focus
+          />
+          <span
+            v-else
+            class="conv-title"
+            :title="[item.title, item.message_count + ' 条消息', '双击重命名'].join(' · ')"
+            @click="select(item.id)"
+            @dblclick="startRename(item.id)"
+          >{{ item.title }}</span>
+          <button type="button" class="conv-del" v-if="auth.can(2)" title="删除会话" @click.stop="remove(item.id)">×</button>
+        </li>
+      </template>
       <li v-if="!filtered.length && search" class="no-conversations">没有匹配的会话</li>
     </ul>
 
@@ -181,6 +247,11 @@ function openUsers() {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
         审批中心
         <span v-if="nav.state.approvalPending" class="nav-badge">{{ nav.state.approvalPending }}</span>
+      </button>
+      <!-- N9：变更历史入口（管理员/超管，接口需 role ≥ 2） -->
+      <button type="button" class="side-nav-btn" @click="openChanges">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>
+        变更历史
       </button>
       <button type="button" class="side-nav-btn" v-if="auth.isSuper" @click="openUsers">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>

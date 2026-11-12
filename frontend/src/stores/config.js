@@ -1,4 +1,6 @@
 import { defineStore } from 'pinia'
+import { getBrand, applyBrand } from '../theme'
+import { brand } from '../brand'
 
 // 本地偏好：主题、显示过程、深度搜索、技能卡、模型、当前会话 id
 // 全部持久化到 localStorage，键名与原 index.html 保持一致（wh_*）
@@ -23,6 +25,8 @@ export const useConfigStore = defineStore('config', {
       this.theme = t
       try { localStorage.setItem('wh_theme', t) } catch (_) {}
       document.documentElement.dataset.theme = t
+      // E1：主题切换后重算品牌色阶（深色下提亮保证 AA 对比度）
+      applyBrand(getBrand() || brand, t)
     },
     toggleTheme() {
       this.setTheme(this.theme === 'dark' ? 'light' : 'dark')

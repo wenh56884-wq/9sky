@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { useConversationsStore } from './conversations'
 import { useConfigStore } from './config'
 import { streamChat, streamDeep } from '../composables/useChat'
+import { toast } from '../composables/useToast'
 
 // 消息 id 生成
 let _seq = 0
@@ -30,6 +31,7 @@ function assistantSkeleton() {
     trace: null,         // 深度搜索过程 { info, plan, search, gap, rerank, fail, sources }
     status: '',
     approvals: [],
+    proposals: [],    // 写数据变更草案（write_proposal 事件插入，§8.8）
   }
 }
 
@@ -37,6 +39,7 @@ export const useChatStore = defineStore('chat', {
   state: () => ({
     messages: [],        // 当前会话的消息数组
     sending: false,       // 是否正在生成
+    queue: [],           // N8：被全局锁阻塞、等待执行的提问文本
   }),
   getters: {
     isEmpty: (s) => s.messages.length === 0,
@@ -78,6 +81,7 @@ export const useChatStore = defineStore('chat', {
 
     clearMessages() {
       this.messages = []
+      this.queue = []
     },
 
     addUserMessage(text) {
@@ -93,11 +97,20 @@ export const useChatStore = defineStore('chat', {
     // 发送问题：编排用户消息 → assistant 消息 → 流式 → 收尾
     // F18 竞态保护：runSeq 递增标记当前轮；生成中切会话后，
     // 旧流的事件不再写入消息，finally 只在仍是当前轮时重置 sending
+    // N8 排队：全局锁（sending）阻塞第二个请求时，入队并提示“已排队”，
+    // 本轮结束后自动执行队列中的下一条，而不是静默卡住
     async sendQuestion(text) {
-      if (!text || this.sending) return
+      if (!text) return
       const conv = useConversationsStore()
       const cfg = useConfigStore()
       if (!conv.currentId) return
+
+      // N8：已有请求在进行中 → 新请求排队，不静默丢弃
+      if (this.sending) {
+        if (!this.queue.includes(text)) this.queue.push(text)
+        toast.info('上一条回答还在进行中，已排队，完成后自动发送')
+        return
+      }
 
       const myRun = ++runSeq
       const threadAtSend = conv.currentId
@@ -141,6 +154,11 @@ export const useChatStore = defineStore('chat', {
         if (myRun === runSeq) {
           this.sending = false
           _controller = null
+          // N8：当前轮结束，自动执行队列中的下一条
+          if (this.queue.length && !isStale()) {
+            const next = this.queue.shift()
+            this.sendQuestion(next)
+          }
         }
       }
     },

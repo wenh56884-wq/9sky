@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatHeader from './components/ChatHeader.vue'
 import MessageList from './components/MessageList.vue'
@@ -8,16 +8,20 @@ import UploadPanel from './components/UploadPanel.vue'
 import DataPreview from './components/DataPreview.vue'
 import SourceDrawer from './components/SourceDrawer.vue'
 import ApprovalCenter from './components/ApprovalCenter.vue'
+import SettingsDrawer from './components/SettingsDrawer.vue'
+import OnboardingWizard from './components/OnboardingWizard.vue'
 import ToastHost from './components/ToastHost.vue'
 import ConfirmHost from './components/ConfirmHost.vue'
 import LoginView from './views/LoginView.vue'
 import UserManage from './views/UserManage.vue'
+import ChangeHistory from './views/ChangeHistory.vue'
 import { useAuthStore } from './stores/auth'
 import { useConversationsStore } from './stores/conversations'
 import { useChatStore } from './stores/chat'
 import { useConfigStore } from './stores/config'
 import { useNav } from './composables/useNav'
 import { useHealth } from './composables/useHealth'
+import { useSourceDrawer } from './composables/useSourceDrawer'
 
 const auth = useAuthStore()
 const conv = useConversationsStore()
@@ -25,6 +29,7 @@ const chat = useChatStore()
 const config = useConfigStore()
 const nav = useNav()
 const { refreshHealth } = useHealth()
+const sourceDrawer = useSourceDrawer()
 
 let inited = false
 
@@ -73,6 +78,59 @@ onMounted(async () => {
 watch(() => auth.loggedIn, (v) => {
   if (v) initWorkspace()
 })
+
+// ---- N4 全局快捷键 ----
+const ONB_KEY = 'jtwt_onboarding'
+const onbDone = ref(false)
+onMounted(() => {
+  try { onbDone.value = localStorage.getItem(ONB_KEY) === '1' } catch (_) {}
+})
+function finishOnboarding() {
+  onbDone.value = true
+  try { localStorage.setItem(ONB_KEY, '1') } catch (_) {}
+}
+
+function isEditable(el) {
+  if (!el || !el.tagName) return false
+  const tag = el.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true
+}
+
+function onGlobalKey(e) {
+  if (!auth.loggedIn) return
+  const editable = isEditable(e.target)
+  const mod = e.ctrlKey || e.metaKey
+
+  // Ctrl+K：打开会话搜索（输入框聚焦时不劫持，先检查事件目标）
+  if (mod && (e.key === 'k' || e.key === 'K')) {
+    if (editable) return
+    e.preventDefault()
+    nav.requestSearchFocus()
+    return
+  }
+
+  // Ctrl+/：打开设置抽屉
+  if (mod && e.key === '/') {
+    e.preventDefault()
+    nav.openSettings()
+    return
+  }
+
+  // Esc：关闭所有浮层（抽屉、模态、搜索）
+  if (e.key === 'Escape') {
+    let closed = false
+    if (nav.state.auditOpen) { nav.closeAudit(); closed = true }
+    if (nav.state.settingsOpen) { nav.closeSettings(); closed = true }
+    if (nav.state.approvalCenterOpen) { nav.closeApprovalCenter(); closed = true }
+    if (sourceDrawer.state.open) { sourceDrawer.close(); closed = true }
+    if (closed) return
+    // 浮层已关：清空侧栏搜索词（搜索框本身聚焦时也清掉）
+    nav.requestClearSearch()
+  }
+}
+
+onMounted(() => document.addEventListener('keydown', onGlobalKey))
+onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKey))
 </script>
 
 <template>
@@ -90,6 +148,9 @@ watch(() => auth.loggedIn, (v) => {
   <!-- 用户管理页（超管） -->
   <UserManage v-else-if="nav.state.view === 'users'" />
 
+  <!-- N9 变更历史页（管理员/超管） -->
+  <ChangeHistory v-else-if="nav.state.view === 'changes'" />
+
   <!-- 工作台 -->
   <div v-else class="app">
     <Sidebar />
@@ -102,6 +163,10 @@ watch(() => auth.loggedIn, (v) => {
       <SourceDrawer />
     </main>
     <ApprovalCenter />
+    <!-- N3 设置抽屉 -->
+    <SettingsDrawer />
+    <!-- E4 首启动引导：未完成时显示，完成标记写入 localStorage -->
+    <OnboardingWizard v-if="!onbDone" @finish="finishOnboarding" />
   </div>
 
   <!-- U1：全局 Toast 与确认弹窗（任何视图可用） -->

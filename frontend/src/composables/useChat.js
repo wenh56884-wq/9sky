@@ -167,6 +167,8 @@ export async function streamChat({ question, threadId, skill, model, controller,
 
   // 收尾：处理最终事件
   if (final && final.type === 'error') {
+    // N7：保存 error_id，前端在错误气泡里展示并提供复制（用户可贴给运维）
+    message.error_id = final.error_id || ''
     const detail = String(final.message || '未知错误').trim()
     if (message.started) {
       message.content += `\n\n> ⚠️ **这次没跑完**：${detail}\n>\n> 可以直接再问一次；如果是刚改过配置，重启服务后就正常了。`
@@ -248,6 +250,8 @@ export async function streamDeep({ question, threadId, model, controller, messag
 
   if (final && final.type === 'error') {
     if (!message.trace) message.trace = { info: '', plan: [], search: [], gap: [], rerank: '', fail: '', sources: [] }
+    // N7：深度搜索出错同样保留 error_id
+    message.error_id = final.error_id || ''
     message.trace.fail = '这次没跑完：' + (final.message || '') + '（可以直接再问一次）'
   } else if (!message.started) {
     message.content = (final && final.answer) || ''

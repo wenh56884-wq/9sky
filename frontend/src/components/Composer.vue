@@ -29,16 +29,21 @@ function onInput() {
 }
 
 function onKeydown(e) {
-  if (e.key !== 'Enter' || e.shiftKey) return
+  if (e.key !== 'Enter') return
   // F10：中文输入法合成中（拼音选词）回车不发送
   if (e.isComposing || e.keyCode === 229) return
+  // N4：Ctrl+Enter（或 Cmd+Enter）发送；普通 Enter 发送，Shift+Enter 换行
+  const wantSend = e.ctrlKey || e.metaKey ? true : !e.shiftKey
+  if (!wantSend) return
   e.preventDefault()
-  if (canSend.value) submit()
+  submit()
 }
 
 function submit() {
   const t = text.value.trim()
-  if (!canSend.value) return
+  if (!t) return
+  if (!conv.currentId) return
+  // N8：sending 时由 chat store 入队并提示「已排队」，而不是静默卡住
   chat.sendQuestion(t)
   text.value = ''
   autoResize()
@@ -95,6 +100,11 @@ onMounted(async () => {
   <form class="composer" @submit.prevent="submit">
     <div class="composer-wrap">
       <div class="composer-inner">
+        <!-- N8：排队提示——全局锁阻塞时显示还有几条在排队 -->
+        <div v-if="chat.queue.length" class="queue-chip">
+          <span class="dot"></span>
+          已排队 {{ chat.queue.length }} 条，当前回答完成后自动发送
+        </div>
         <textarea
           id="question"
           ref="input"

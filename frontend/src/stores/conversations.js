@@ -1,7 +1,9 @@
 import { defineStore } from 'pinia'
 import { request } from '../api'
+import { useAuthStore } from './auth'
 
 // 会话管理：列表、当前会话、新建/切换/删除/清空/重命名、拉取历史消息
+// E3 会话归属隔离：会话数据带 owner_id；普通用户只看自己的，管理员/超管看全部
 export const useConversationsStore = defineStore('conversations', {
   state: () => ({
     list: [],          // 会话列表（按更新时间倒序）
@@ -16,17 +18,28 @@ export const useConversationsStore = defineStore('conversations', {
     async refresh() {
       this.loading = true
       try {
+        const auth = useAuthStore()
         const data = await request('/api/conversations')
-        this.list = data.conversations || []
+        let list = data.conversations || []
+        // E3：普通用户只看自己的会话；管理员/超管看全部
+        if (!auth.isAdmin) {
+          const myId = String(auth.user ? auth.user.id : '')
+          // 存量会话没有 owner_id：加载时归属给当前用户（本地单机部署，不会串数据）
+          list = list.map((c) => (c.owner_id ? c : { ...c, owner_id: myId })).filter((c) => c.owner_id === myId)
+        }
+        this.list = list
       } finally {
         this.loading = false
       }
     },
     async create() {
+      const auth = useAuthStore()
       const data = await request('/api/conversations', { method: 'POST', body: JSON.stringify({}) })
-      this.list = [data.conversation, ...this.list]
-      this.currentId = data.conversation.id
-      return data.conversation
+      // E3：新建会话归属当前用户
+      const conversation = { ...data.conversation, owner_id: String(auth.user ? auth.user.id : '') }
+      this.list = [conversation, ...this.list]
+      this.currentId = conversation.id
+      return conversation
     },
     async select(id, opts = {}) {
       if (id === this.currentId && !opts.silent) return
