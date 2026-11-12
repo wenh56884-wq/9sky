@@ -1,7 +1,7 @@
 <script setup>
 // 审批中心抽屉（管理员/超管可见）：待审批列表 + 审批处理
 // 契约 §4.3：GET /api/approvals 列表；POST /api/approvals/<id> 决策（approve/reject/edit）
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { request } from '../api'
 import { useAuthStore } from '../stores/auth'
 import { useNav } from '../composables/useNav'
@@ -55,6 +55,9 @@ async function load() {
 
 // 打开时加载；管理员登录后在挂载时也拉一次，用于侧栏徽标
 if (auth.isAdmin) load()
+
+// 每次打开抽屉时刷新列表
+watch(open, (v) => { if (v) load() })
 
 function close() {
   nav.closeApprovalCenter()

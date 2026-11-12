@@ -217,4 +217,9 @@
 
 ## 完成记录
 
-- **2026-11-12**：优化方案确立。4 级权限（访客/用户/管理员/超管）、风险分级双级审批、本地账号密码登录、扩展多工具协同。任务分配文档完成，**已并行派发后端 Claude B（认证/权限/HITL 扩展/审批层次/接口鉴权）与前端 Claude A（登录/权限控制/审批层次界面/用户管理）**，二者按本文档第四节接口契约并行执行中。完成后由主导方统筹联调与最终测试。
+- **2026-11-12**：优化方案确立。4 级权限（访客/用户/管理员/超管）、风险分级双级审批、本地账号密码登录、扩展多工具协同。任务分配文档完成，并行派发后端 Claude B（认证/权限/HITL 扩展/审批层次/接口鉴权）与前端 Claude A（登录/权限控制/审批层次界面/用户管理）。
+- **2026-11-12（完成）**：前后端均已完成并验证。
+  - **后端 Claude B**：新建 `auth_store.py`/`auth.py`（auth.sqlite3、bcrypt、会话令牌、首次建超管、`@require_auth`/`@require_role`）；升级 `hitl.py`（审批落盘 approvals.sqlite3、扩展受保护工具 forget=high/forecast_metric=low/plot_last_result=low、双级流转、按阶段鉴权、超时拒绝）；改造 `agent.py`（HITL 动态注册、`approval_required` 加 risk_level/stage）；改造 `web.py`（`/api/auth/*`、`/api/approvals`、全路由按 §4.2 矩阵加鉴权、ADMIN_TOKEN 兜底）；`.env` 新增 4 项配置、requirements 加 bcrypt。py_compile 通过；鉴权矩阵、审批双级/单级/超时/落盘重启均实测通过；35 项自检 + 端到端审批流 PASS。
+  - **前端 Claude A**：新增 LoginView（登录+首次改密）、UserManage（超管用户管理）、ApprovalCenter（审批中心抽屉）、auth store/api、useNav；改造 App.vue（登录/访客无权限/用户管理/工作台分流）、Sidebar/ChatHeader（按角色显示功能项）、ApprovalCard（风险等级+阶段+按角色决策）、api/index.js（Bearer 鉴权+401 跳登录）、useChat（透传 risk_level/stage）、main.css。`npm run build` 通过，后端可托管。
+  - **主导方端到端测试**：Playwright+Edge 浏览器验证——登录页显示、超管登录进入工作台（含用户管理/审批入口）、创建普通用户、登出回登录页、普通用户权限边界（无用户管理入口），**全部通过，控制台零错误**。
+  - **遗留**：后端验证产生的测试用户 `user1` 与测试审批记录仍存于 `auth.sqlite3`/`approvals.sqlite3`（不影响功能，admin 超管完好）；清理需授权执行 `DELETE FROM users WHERE username='user1'; DELETE FROM approvals;`。
