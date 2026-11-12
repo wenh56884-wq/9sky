@@ -22,13 +22,12 @@ const editError = ref('')
 const open = computed(() => nav.state.approvalCenterOpen)
 
 function operatorId(it) {
-  const op = it.operator
-  return op && typeof op === 'object' ? (op.id || '') : String(op || '')
+  const op = it.operator_id || (it.operator && typeof it.operator === 'object' ? (it.operator.id || '') : '')
+  return String(op || '')
 }
 
 function operatorName(it) {
-  const op = it.operator
-  if (op && typeof op === 'object') return op.username || op.id || '—'
+  const op = it.operator_id || (it.operator && typeof it.operator === 'object' ? it.operator.username : '')
   return op || '—'
 }
 
