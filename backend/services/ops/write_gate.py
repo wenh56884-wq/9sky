@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 
 RISK_L1, RISK_L2, RISK_L3 = "L1", "L2", "L3"
@@ -54,6 +56,43 @@ _THREE_DBS = (
     "healthcare_analytics_competition",
     "telecom_operations_db",
 )
+
+
+def _load_whitelist() -> dict:
+    """从环境变量 WRITE_TABLE_WHITELIST 加载写表白名单（JSON 格式）。
+
+    格式：{"库名.表名": {"columns": ["允许列", ...]}}
+    环境变量未设置或解析失败时返回空 dict（安全默认：全部拒绝）。
+    """
+    raw = (os.getenv("WRITE_TABLE_WHITELIST") or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        # 只保留结构正确的条目
+        result = {}
+        for table, spec in data.items():
+            if isinstance(spec, dict) and "columns" in spec:
+                cols = [str(c) for c in (spec.get("columns") or [])]
+                result[str(table)] = {"columns": cols}
+        return result
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
+def get_whitelist() -> dict:
+    """获取当前生效的写表白名单。
+
+    从环境变量 WRITE_TABLE_WHITELIST 加载条目并**合并**到 POLICY["table_whitelist"]，
+    支持运行时变更；环境变量未设置时保持现有配置不变（安全默认：空 {} → 全部拒绝）。
+    """
+    loaded = _load_whitelist()
+    for table, spec in loaded.items():
+        POLICY["table_whitelist"][table] = spec
+    return dict(POLICY["table_whitelist"])
+
 
 
 def _strip_literals_and_comments(sql: str) -> str:
@@ -184,6 +223,9 @@ def evaluate(
         通过：``{"ok": True, "risk": "L1|L2|L3", "required_role": n, "estimated_rows": n}``
     """
     stmt = (sql or "").strip()
+
+    # 加载写表白名单（从 WRITE_TABLE_WHITELIST 环境变量，支持运行时变更）
+    get_whitelist()
 
     # 规则 1：单语句（无分号分隔）
     probe = _strip_literals_and_comments(stmt)

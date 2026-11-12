@@ -36,11 +36,15 @@ if (Test-Path $MyAdmin) {
     if ($LASTEXITCODE -eq 0) { $stopped = $true }
 }
 
-if (-not $stopped) {
-    # 兜底：只结束本软件目录下的 mysqld 进程，避免影响其它 MySQL
-    Get-Process mysqld -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and $_.Path.StartsWith($DataHome, [System.StringComparison]::OrdinalIgnoreCase) } |
-        ForEach-Object { Stop-Process -Id $_.Id -Force; $stopped = $true }
+# 兜底：无论 mysqladmin 是否成功，都按路径杀一遍本软件目录下的 mysqld 进程，
+# 确保没有残留的孤儿进程持锁导致下次无法启动。
+$killedFallback = 0
+Get-Process mysqld -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($DataHome, [System.StringComparison]::OrdinalIgnoreCase) } |
+    ForEach-Object { Stop-Process -Id $_.Id -Force; $killedFallback++ }
+if ($killedFallback -gt 0) {
+    $stopped = $true
+    Write-Host "[i] 兜底清理：已强制结束 $killedFallback 个残留 mysqld 进程" -ForegroundColor Yellow
 }
 
 if ($stopped) {

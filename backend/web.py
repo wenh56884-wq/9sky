@@ -23,6 +23,7 @@ from core.agent import (
 )
 from services.ops import hitl, debugging
 from services.ops import write_executor
+from services.ops import write_gate
 from services.ops import auth as auth_service
 from services.ops.auth import require_auth, require_role
 
@@ -322,6 +323,13 @@ def writes_pending():
     """我能批的写草案（按角色过滤：required_role <= 我的角色）。"""
     role = int(g.current_user.get("role", 1))
     return jsonify({"items": hitl.manager.list_pending_writes(min_role=role)})
+
+
+@app.get("/api/writes/whitelist")
+@require_role(3)
+def writes_whitelist():
+    """查看当前写能力表白名单配置（超管专属）。"""
+    return jsonify({"table_whitelist": write_gate.get_whitelist()})
 
 
 @app.post("/api/writes/<proposal_id>/decide")
