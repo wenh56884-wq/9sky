@@ -84,7 +84,44 @@ git push -u origin main
 
 ### 3.4 已经落地在哪里
 
-红线由仓库根 `.gitignore` 执行，已覆盖上述全部路径。**禁止用 `git add -f` 绕过**；确需例外时，先在本页第 3 节登记理由。
+红线由仓库根 `.gitignore` 与 `backend/.gitignore` 共同执行，已覆盖上述全部路径。**禁止用 `git add -f` 绕过**；确需例外时，先在本页第 3 节登记理由。
+
+### 3.5 目录进仓库、数据不进（重要）
+
+用户的要求是：**「企业数据不要放，代码放；但文件目录要进，才知道这里放什么东西。」**
+所以这些目录**必须在仓库里存在**，只是里面只留一份 `README.md` 说明用途，实际数据被忽略。
+
+| 目录 | 仓库里有什么 | 忽略什么 | README 说明 |
+|---|---|---|---|
+| `backend/data/` | 仅 `README.md` | 全部 sqlite3 / json 索引 / 会话 | 各文件的用途与能否重建 |
+| `backend/data/uploads/` | 仅 `README.md` | 用户上传的原始文件 | 隐私最高风险，清理策略 |
+| `backend/data/非结构化数据/` | 仅 `README.md` | 评测样本 md/json | 与 `backend/eval/` 的关系 |
+| `backend/knowledge/uploads/` | 仅 `README.md` | 租户上传的知识库文档 | 与示例知识库的区别 |
+| `backend/knowledge/自动学习/` | 仅 `README.md` | 按日期沉淀的问答记录 | 隐私风险与替代方案 |
+| `backend/reports/` | 仅 `README.md` | 生成的报表 / 导出 / 图表 | 报表落在哪、是否需要重建 |
+| `infra/sql/` | 仅 `README.md` | 三个 `.sql` 转储（380/107/80MB） | 获取方式与导库步骤 |
+| `infra/runtime/` | 仅 `README.md` | 内置 Python 892MB | 路径要求、开发机可省 |
+| `infra/mysql/` | 仅 `README.md` | MySQL 程序与 `data/` | 端口必须与 `.env` 一致 |
+| `infra/downloads/` | 仅 `README.md` | 安装包缓存 | 可安全清空 |
+
+**实现要点（改 `.gitignore` 时别踩）**
+
+Git 有一条硬规则：**父目录被整条排除后，里面的文件无法用 `!` 重新纳入**。
+所以不能写 `backend/data/`，必须写成：
+
+```gitignore
+backend/data/*
+!backend/data/README.md
+!backend/data/uploads/              # 先放行子目录
+!backend/data/非结构化数据/
+backend/data/uploads/*              # 再排除子目录内容
+!backend/data/uploads/README.md     # 最后放行子目录里的 README
+```
+
+顺序错了就会静默失效（`git check-ignore -v <路径>` 可以定位是哪条规则命中的）。
+
+**代码一个都不能漏**：当前仓库 134 个跟踪文件，磁盘上除两个自动沉淀的问答记录外，所有 `.py` / `.vue` / `.js` / `.css` / `.html` / `.ps1` / `.bat` / `.md` 都在库中。
+新增代码目录时，不要为了「反正会被忽略」而不写 `.gitignore` 例外——先跑 `git status --short` 确认它真的进了索引。
 
 ---
 
@@ -162,7 +199,7 @@ git commit --amend                          # 或新开一次提交
 
 | 指标 | 值 |
 |---|---|
-| 跟踪文件数 | 约 120 |
+| 跟踪文件数 | 134（含 10 份数据目录的 `README.md` 占位说明） |
 | 仓库体积 | 约 2.0MB |
 | 目录结构 | `backend/` `frontend/` `infra/` `docs/` |
 | 已排除 | 见 §3.1 / §3.2 |
@@ -177,4 +214,5 @@ git commit --amend                          # 或新开一次提交
 2. 每次改完就推，不攒。
 3. 推之前跑 §5 的四条自检，有输出就停。
 4. 任何 `.env` / 数据文件 / SQL 转储 / 上传文件 / 自动学习记录，**一律不入库**，不要用 `-f` 绕。
-5. 需要改这份规则时，改的是本页，不是散落在别处的副本。
+5. **但数据目录本身要入库**：里面放一份 `README.md` 说明「这里放什么」，只忽略内容（写法见 §3.5）。
+6. 需要改这份规则时，改的是本页，不是散落在别处的副本。

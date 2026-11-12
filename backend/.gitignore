@@ -3,7 +3,24 @@
 .env.bak_*
 __pycache__/
 *.pyc
-data/
-*.sqlite3
-reports/
 .vscode/
+
+# ---------- 企业数据 / 运行时数据：目录保留，内容不入库 ----------
+# 目录要在仓库里（含 README 说明「这里放什么」），但里面的数据一律不提交。
+# 不能写 `data/` 这种整目录排除：目录被排除后，里面的 README 无法用 ! 重新纳入。
+data/*
+!data/README.md
+!data/uploads/
+!data/非结构化数据/
+data/uploads/*
+!data/uploads/README.md
+data/非结构化数据/*
+!data/非结构化数据/README.md
+
+reports/*
+!reports/README.md
+
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
