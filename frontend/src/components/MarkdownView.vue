@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 
 const props = defineProps({
   content: { type: String, default: '' },
@@ -14,7 +15,8 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;')
 }
 
-// 配置 marked：代码块带语言标签+复制按钮；图片仅放行同源 /... 或 http(s)
+// 配置 marked：代码块带语言标签+复制按钮；图片仅放行同源 /... 或 http(s)；
+// 链接统一 target=_blank + rel=noopener noreferrer，只放行 http/https/mailto（F13）
 marked.use({
   renderer: {
     code({ text, lang }) {
@@ -35,12 +37,25 @@ marked.use({
       }
       return ''
     },
+    link({ href, title, text }) {
+      const h = (href || '').trim()
+      // 只允许 http/https/mailto；javascript: 等一律降级为纯文本
+      if (!/^(https?:|mailto:)/i.test(h)) return escapeHtml(text || h)
+      const t = title ? ` title="${escapeHtml(title)}"` : ''
+      return `<a href="${escapeHtml(h)}" target="_blank" rel="noopener noreferrer"${t}>${escapeHtml(text || '') || escapeHtml(h)}</a>`
+    },
   },
 })
 
+// F12：marked 输出先过 DOMPurify，防 XSS
 const html = computed(() => {
   if (!props.content) return ''
   let out = marked.parse(props.content)
+  out = DOMPurify.sanitize(out, {
+    ADD_ATTR: ['target'],
+    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form'],
+    FORBID_ATTR: ['onerror', 'onload', 'onclick'],
+  })
   // 表格外包 .tbl-wrap（marked 默认只输出 <table>）
   out = out.replace(/<table>/g, '<div class="tbl-wrap"><table>').replace(/<\/table>/g, '</table></div>')
   return out

@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useAuthStore, ROLE_LABELS } from '../stores/auth'
 import { useNav } from '../composables/useNav'
+import { confirm as askConfirm } from '../composables/useConfirm'
 
 const auth = useAuthStore()
 const nav = useNav()
@@ -96,7 +97,13 @@ async function submitReset() {
 }
 
 async function remove(u) {
-  if (!confirm('确定删除用户「' + u.username + '」？该用户将无法再登录。')) return
+  const ok = await askConfirm({
+    title: '删除用户',
+    text: '确定删除用户「' + u.username + '」？该用户将无法再登录。',
+    okText: '删除',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await auth.deleteUser(u.id)
     users.value = users.value.filter((x) => x.id !== u.id)

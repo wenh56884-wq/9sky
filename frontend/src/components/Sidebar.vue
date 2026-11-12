@@ -6,6 +6,8 @@ import { useConfigStore } from '../stores/config'
 import { useAuthStore, ROLE_LABELS } from '../stores/auth'
 import { useNav } from '../composables/useNav'
 import { useHealth } from '../composables/useHealth'
+import { toast } from '../composables/useToast'
+import { confirm as askConfirm } from '../composables/useConfirm'
 
 const conv = useConversationsStore()
 const chat = useChatStore()
@@ -28,6 +30,8 @@ const filtered = computed(() => {
 })
 
 async function loadConv(id) {
+  // F18：切会话时中止当前生成，避免旧流继续写入已卸载的消息
+  if (chat.isSending()) chat.stop()
   chat.clearMessages()
   const data = await conv.select(id)
   if (data) chat.loadHistory(data)
@@ -44,37 +48,49 @@ async function createChat() {
     chat.clearMessages()
     config.setThreadId(c.id)
   } catch (e) {
-    alert('新建会话没成功：' + e.message)
+    toast.error('新建会话没成功：' + e.message)
   }
 }
 
 async function remove(id) {
   const target = conv.list.find((c) => c.id === id)
   if (!target) return
-  if (!confirm('确定删除会话「' + target.title + '」？该会话的记忆会一并清除。')) return
-  await conv.remove(id)
-  if (!conv.list.length) {
-    const c = await conv.create()
-    chat.clearMessages()
-    config.setThreadId(c.id)
-  } else if (!conv.currentId) {
-    await loadConv(conv.list[0].id)
-    config.setThreadId(conv.list[0].id)
+  const ok = await askConfirm({
+    title: '删除会话',
+    text: '确定删除会话「' + target.title + '」？该会话的记忆会一并清除。',
+    okText: '删除',
+    danger: true,
+  })
+  if (!ok) return
+  if (chat.isSending()) chat.stop()
+  const wasCurrent = await conv.remove(id)
+  chat.clearMessages()
+  config.setThreadId(conv.currentId)
+  if (wasCurrent) {
+    const data = await conv.select(conv.currentId, { silent: true })
+    if (data) chat.loadHistory(data)
   }
 }
 
 async function clearAll() {
-  if (!conv.list.length) { alert('左侧还没有会话可以清空。'); return }
+  if (!conv.list.length) { toast.info('左侧还没有会话可以清空。'); return }
   const total = conv.list.length
-  if (!confirm('确定清空左侧全部 ' + total + ' 个会话？\n\n会删除这些会话的聊天记录与标题，且无法恢复（跨会话长期记忆会保留）。')) return
+  const ok = await askConfirm({
+    title: '清空会话',
+    text: '确定清空左侧全部 ' + total + ' 个会话？\n\n会删除这些会话的聊天记录与标题，且无法恢复（跨会话长期记忆会保留）。',
+    okText: '清空',
+    danger: true,
+  })
+  if (!ok) return
   try {
+    if (chat.isSending()) chat.stop()
     await conv.clearAll()
     chat.clearMessages()
     const c = await conv.create()
     config.setThreadId(c.id)
-    alert('已清空 ' + total + ' 个会话，现在是一个全新的对话。')
+    toast.success('已清空 ' + total + ' 个会话，现在是一个全新的对话。')
   } catch (e) {
-    alert('清空没成功：' + e.message)
+    toast.error('清空没成功：' + e.message)
   }
 }
 
@@ -86,7 +102,7 @@ function commitRename(id, value) {
   const v = (value || '').trim()
   const cur = conv.list.find((c) => c.id === id)
   if (v && cur && v !== cur.title) {
-    conv.rename(id, v).catch((e) => alert('重命名没成功：' + e.message))
+    conv.rename(id, v).catch((e) => toast.error('重命名没成功：' + e.message))
   }
   conv.cancelRename()
 }

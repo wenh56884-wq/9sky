@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 import MarkdownView from './MarkdownView.vue'
 import PlanPanel from './PlanPanel.vue'
 import StatusLine from './StatusLine.vue'
@@ -11,36 +11,45 @@ const props = defineProps({
   message: { type: Object, required: true },
 })
 
-const time = ref(clock())
-
-function clock() {
-  const d = new Date()
-  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
+// B2：后端历史消息只有 {role, content}，没有时间戳。
+// 只有本轮新消息（本地创建，带 createdAt）显示时间，历史消息不显示，不伪造。
+function clock(d) {
+  const date = d || new Date()
+  return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0')
 }
 
-async function copyAnswer() {
+const time = computed(() => {
+  const t = props.message.createdAt
+  return t ? clock(new Date(t)) : ''
+})
+
+// B1：用 ref 管理 copied 状态，不用全局 querySelector，不改 textContent
+const copied = ref(false)
+let timer = null
+
+async function copy() {
   const text = props.message.content || ''
-  const done = () => {
-    const btn = document.querySelector('.msg-actions .mini-btn.copied')
-    if (btn) {
-      btn.textContent = '已复制'
-      setTimeout(() => { btn.textContent = '复制' }, 1400)
-    }
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch (_) {
+    fallbackCopy(text)
   }
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done))
-  } else {
-    fallbackCopy(text, done)
-  }
+  copied.value = true
+  clearTimeout(timer)
+  timer = setTimeout(() => {
+    copied.value = false
+  }, 1500)
 }
 
-function fallbackCopy(text, done) {
+onBeforeUnmount(() => clearTimeout(timer))
+
+function fallbackCopy(text) {
   const ta = document.createElement('textarea')
   ta.value = text
   ta.style.cssText = 'position:fixed;opacity:0'
   document.body.appendChild(ta)
   ta.select()
-  try { document.execCommand('copy'); done() } catch (_) { /* noop */ }
+  try { document.execCommand('copy') } catch (_) { /* noop */ }
   ta.remove()
 }
 </script>
@@ -53,7 +62,7 @@ function fallbackCopy(text, done) {
   <div v-else class="msg assistant">
     <div class="avatar">梧</div>
     <div class="ai-box">
-      <div class="role">九天梧桐 <span class="time"> · {{ time }}</span></div>
+      <div class="role">九天梧桐 <span v-if="time" class="time"> · {{ time }}</span></div>
 
       <PlanPanel v-if="message.plan" :plan="message.plan" />
       <StatusLine v-if="message.status" :status="message.status" />
@@ -66,9 +75,9 @@ function fallbackCopy(text, done) {
         </div>
         <MarkdownView v-else :content="message.content" />
         <div class="msg-actions">
-          <button type="button" class="mini-btn" @click="copyAnswer">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-            复制
+          <button type="button" class="mini-btn" title="复制回答" @click="copy">
+            <svg v-if="!copied" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            {{ copied ? '已复制' : '复制' }}
           </button>
         </div>
       </div>

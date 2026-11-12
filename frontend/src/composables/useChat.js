@@ -85,13 +85,20 @@ function applyChatEvent(evt, message, showProc) {
   }
 }
 
-export async function streamChat({ question, threadId, skill, model, controller, message, showProc }) {
+export async function streamChat({ question, threadId, skill, model, controller, message, showProc, isStale }) {
   let final
   try {
     final = await streamNdjson(
       '/api/chat',
       { question, thread_id: threadId, skill: skill || '', model: model || '' },
-      (evt) => applyChatEvent(evt, message, showProc),
+      (evt) => {
+        // F18：切会话/新轮后旧流的事件不再写入已卸载的消息，并中止旧流
+        if (isStale && isStale()) {
+          if (controller) controller.abort()
+          return
+        }
+        applyChatEvent(evt, message, showProc)
+      },
       controller.signal
     )
   } catch (error) {
@@ -161,13 +168,20 @@ function applyDeepEvent(evt, message) {
   }
 }
 
-export async function streamDeep({ question, threadId, model, controller, message }) {
+export async function streamDeep({ question, threadId, model, controller, message, isStale }) {
   let final
   try {
     final = await streamNdjson(
       '/api/deep',
       { question, thread_id: threadId, model: model || '' },
-      (evt) => applyDeepEvent(evt, message),
+      (evt) => {
+        // F18：切会话/新轮后旧流的事件不再写入已卸载的消息，并中止旧流
+        if (isStale && isStale()) {
+          if (controller) controller.abort()
+          return
+        }
+        applyDeepEvent(evt, message)
+      },
       controller.signal
     )
   } catch (error) {

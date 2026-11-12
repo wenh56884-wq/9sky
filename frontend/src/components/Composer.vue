@@ -29,10 +29,11 @@ function onInput() {
 }
 
 function onKeydown(e) {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault()
-    if (canSend.value) submit()
-  }
+  if (e.key !== 'Enter' || e.shiftKey) return
+  // F10：中文输入法合成中（拼音选词）回车不发送
+  if (e.isComposing || e.keyCode === 229) return
+  e.preventDefault()
+  if (canSend.value) submit()
 }
 
 function submit() {

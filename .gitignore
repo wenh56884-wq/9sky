@@ -64,6 +64,7 @@ infra/*.7z
 # 需要数据时从 Release 附件或内网网盘获取，见 §17.3
 infra/sql/*.sql
 infra/sql/*.sql.gz
+!infra/sql/schema_change_log.sql
 
 # ---------- 日志与临时 ----------
 *.log

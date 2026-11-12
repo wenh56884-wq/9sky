@@ -4,7 +4,8 @@
 #        双击本脚本 = 网页与数据库全部停止，彻底退出。
 # ============================================================
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$Root     = Split-Path -Parent $PSScriptRoot
+# $InfraRoot 只用于匹配网页进程的可执行路径（infra\ 目录），不是项目根目录
+$InfraRoot = Split-Path -Parent $PSScriptRoot
 $DataHome = "C:\ProgramData\JiuTianWuTong"
 $MySrv    = Join-Path $DataHome "mysql\server"
 $MyIni    = Join-Path $DataHome "mysql\my.ini"
@@ -15,7 +16,7 @@ $DbPass  = "123456"
 # ---------- 1) 停止网页服务（本发布包便携 Python 运行的 web.py） ----------
 $webKilled = 0
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object {
-    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($Root, [System.StringComparison]::OrdinalIgnoreCase)
+    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($InfraRoot, [System.StringComparison]::OrdinalIgnoreCase)
 } | ForEach-Object {
     Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
     $webKilled++

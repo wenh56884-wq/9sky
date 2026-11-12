@@ -77,6 +77,7 @@ from services.ops import sanitize  # 输出脱敏：结果集预处理 + 回答 
 from services.knowledge import knowledge_learning  # 自动沉淀上传摘要与已完成问答，供后续知识检索使用
 from services.ops.observability import langsmith_summary  # LangSmith 标准环境变量追踪的安全状态摘要
 from services.ops import hitl  # 高风险工具必须经过人工审批
+from core.tools.write_tools import propose_write  # 写数据草案工具（只出草案，不执行）
 from services.ops import debugging  # 统一错误编号、脱敏日志与调试开关
 from services.analytics import pysandbox  # 受限 Python 计算沙箱：给 Agent 一个「用 Python 算」的能力
 from services.analytics import ml_insight  # 数据洞察：统计画像 / 相关分析 / 异常检测 / 聚类挖掘
@@ -190,28 +191,47 @@ PLOT_NUMERIC_RATIO = 0.8    # 一列被判定为“数值列”所需的最小�
 SOURCE_TEXT_LIMIT = 300     # 来源里 SQL / 描述展示的最大字符数
 
 
-def db_config() -> dict:
-    """MySQL 连接配置，可用 DB_HOST / DB_PORT / DB_USER / DB_PASSWORD 覆盖（见 .env）。"""
+# 三个数据库专用账号（§8.2）：用户名固定，口令由 setup_and_start.ps1 随机生成写入 .env
+_DB_ACCOUNTS = {
+    "read":  ("jt_read",  "DB_USER_READ"),
+    "write": ("jt_write", "DB_USER_WRITE"),
+    "admin": ("jt_admin", "DB_USER_ADMIN"),
+}
+
+
+def db_config(mode: str = "read") -> dict:
+    """MySQL 连接配置，可用 DB_HOST / DB_PORT / DB_USER / DB_PASSWORD 覆盖（见 .env）。
+
+    mode: read（默认，jt_read 三库只读）/ write（jt_write 白名单表读写）/ admin（jt_admin 三库 ALL）。
+    专用账号口令为空时回退到 DB_USER/DB_PASSWORD（兼容旧环境，root 仅运维排障用）。
+    """
+    mode = (mode or "read").strip().lower()
+    username, pass_env = _DB_ACCOUNTS.get(mode, _DB_ACCOUNTS["read"])
+    password = (os.getenv(pass_env) or "").strip()
+    if not password:
+        username = os.getenv("DB_USER", "root")
+        password = os.getenv("DB_PASSWORD") or "123456"
     return {
         "host": os.getenv("DB_HOST", "localhost"),
         "port": _env_int("DB_PORT", 3306, minimum=1, maximum=65535),
-        "user": os.getenv("DB_USER", "root"),
-        # Keep compatibility with the bundled local demo database. Production
-        # deployments should always override this through DB_PASSWORD.
-        "password": os.getenv("DB_PASSWORD") or "123456",
+        "user": username,
+        "password": password,
         "charset": "utf8mb4",
         "connect_timeout": 8,
         "read_timeout": 30,
     }
 
 
-def db_connect(database: str | None = None):
-    """创建 MySQL 连接（pymysql 懒加载，缺失时报清晰的错误）。"""
+def db_connect(database: str | None = None, mode: str = "read"):
+    """创建 MySQL 连接（pymysql 懒加载，缺失时报清晰的错误）。
+
+    mode: read（默认）/ write / admin，见 db_config。
+    """
     try:
         import pymysql
     except ImportError:
         raise RuntimeError("缺少 pymysql，请先执行：pip install pymysql")
-    conf = db_config()
+    conf = db_config(mode=mode)
     if database:
         conf["database"] = database
     return pymysql.connect(**conf)
@@ -2292,6 +2312,7 @@ TOOLS = (
     # 非结构化表格库（非结构化数据/ → SQLite）：本地分析 → 召回 → 看列 → 只读 SQL
     + [search_knowledge]
     + [remember, recall, forget]  # 跨会话长期记忆始终可用
+    + [propose_write]  # 写数据草案（只出草案，需审批后才执行，§8.4）
 )
 
 
@@ -4334,6 +4355,70 @@ class ChatService:
                                     f"模型连续 {MAX_REPEAT_TOOL} 次重复调用工具 {name}（参数完全相同），"
                                     "疑似陷入死循环，已终止；可换一种问法或把任务拆小后再试。"
                                 )
+                            # 写数据草案特殊处理（§8.8）：propose_write 产出 write_proposal 事件，
+                            # 暂停流式等待审批，批准后执行并产出 write_applied，驳回产出 write_rejected
+                            if name == "propose_write":
+                                result, ok = _invoke_tool_call(call)
+                                try:
+                                    proposal = json.loads(result) if isinstance(result, str) else {}
+                                except (json.JSONDecodeError, TypeError):
+                                    proposal = {}
+                                if proposal.get("ok") and proposal.get("approval_id"):
+                                    yield {
+                                        "type": "write_proposal",
+                                        "proposal_id": proposal.get("proposal_id"),
+                                        "approval_id": proposal.get("approval_id"),
+                                        "database": proposal.get("database"),
+                                        "table": proposal.get("table"),
+                                        "operation": proposal.get("operation"),
+                                        "sql": proposal.get("sql"),
+                                        "risk": proposal.get("risk"),
+                                        "required_role": proposal.get("required_role"),
+                                        "estimated_rows": proposal.get("estimated_rows"),
+                                        "preview": proposal.get("preview"),
+                                        "expires_at": proposal.get("expires_at"),
+                                    }
+                                    # 补上操作者身份（工具内不知当前用户，由流式循环注入）
+                                    approval_obj = hitl.manager._pending.get(proposal["approval_id"])
+                                    if approval_obj and operator_id:
+                                        approval_obj.operator_id = operator_id
+                                    review = hitl.manager.wait(approval_obj) if approval_obj else {
+                                        "decision": "reject", "message": "审批单不存在"
+                                    }
+                                    w_decision = review.get("decision")
+                                    if w_decision == "approve":
+                                        from services.ops import write_executor
+                                        exec_result = write_executor.execute(
+                                            proposal,
+                                            approval_id=proposal.get("approval_id", ""),
+                                            actor_id=operator_id or "",
+                                            approver_id=operator_id or "",
+                                        )
+                                        yield {
+                                            "type": "write_applied" if exec_result.get("ok") else "write_rejected",
+                                            "proposal_id": proposal.get("proposal_id"),
+                                            "execution": exec_result,
+                                        }
+                                    else:
+                                        yield {
+                                            "type": "write_rejected",
+                                            "proposal_id": proposal.get("proposal_id"),
+                                            "reason": review.get("message") or "变更未获批准，已取消",
+                                        }
+                                elif not proposal.get("ok"):
+                                    yield {
+                                        "type": "write_rejected",
+                                        "proposal_id": None,
+                                        "reason": proposal.get("reject_reason", "变更被拒绝"),
+                                    }
+                                meter.record_tool(name, call.get("args") or {}, ok)
+                                meter.record_layer("tool_result", result)
+                                tool_message = ToolMessage(
+                                    content=str(result), tool_call_id=call.get("id")
+                                )
+                                messages.append(tool_message)
+                                persisted.append(tool_message)
+                                continue
                             if hitl.requires_approval(name):
                                 approval = hitl.manager.create(
                                     thread_id, name, call.get("args") or {},

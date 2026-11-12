@@ -45,8 +45,18 @@ export const useConversationsStore = defineStore('conversations', {
     },
     async remove(id) {
       await request(`/api/conversations/${id}`, { method: 'DELETE' })
+      const wasCurrent = this.currentId === id
       this.list = this.list.filter((c) => c.id !== id)
-      if (this.currentId === id) this.currentId = ''
+      // B4：删当前会话后 currentId 不再残留——自动切下一条，没有则新建空会话
+      if (wasCurrent) {
+        if (this.list.length) {
+          this.currentId = this.list[0].id
+        } else {
+          const c = await this.create()
+          this.currentId = c.id
+        }
+      }
+      return wasCurrent
     },
     startRename(id) {
       this.renamingId = id || ''

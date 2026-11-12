@@ -6,6 +6,7 @@ import { useConfigStore } from '../stores/config'
 import { useAuthStore, ROLE_LABELS } from '../stores/auth'
 import { useHealth } from '../composables/useHealth'
 import { useUploads } from '../composables/useUploads'
+import { confirm as askConfirm } from '../composables/useConfirm'
 
 const conv = useConversationsStore()
 const chat = useChatStore()
@@ -37,21 +38,24 @@ function rename() {
   conv.startRename(conv.currentId)
 }
 
-// 删除：等价原 removeConversation，删后选第一个或新建
+// 删除：等价原 removeConversation，删后选第一个或新建（B4 由 store 处理切换）
 async function remove() {
   const cur = conv.current
   if (!cur) return
-  if (!confirm('确定删除会话「' + cur.title + '」？该会话的记忆会一并清除。')) return
-  await conv.remove(cur.id)
-  config.setThreadId('')
+  const ok = await askConfirm({
+    title: '删除会话',
+    text: '确定删除会话「' + cur.title + '」？该会话的记忆会一并清除。',
+    okText: '删除',
+    danger: true,
+  })
+  if (!ok) return
+  if (chat.isSending()) chat.stop()
+  const wasCurrent = await conv.remove(cur.id)
   chat.clearMessages()
-  if (conv.list.length) {
-    const data = await conv.select(conv.list[0].id, { silent: true })
+  config.setThreadId(conv.currentId)
+  if (wasCurrent) {
+    const data = await conv.select(conv.currentId, { silent: true })
     if (data) chat.loadHistory(data)
-  } else {
-    const c = await conv.create()
-    config.setThreadId(c.id)
-    chat.clearMessages()
   }
 }
 </script>

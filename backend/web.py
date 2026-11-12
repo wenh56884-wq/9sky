@@ -22,6 +22,7 @@ from core.agent import (
     search_memories,
 )
 from services.ops import hitl, debugging
+from services.ops import write_executor
 from services.ops import auth as auth_service
 from services.ops.auth import require_auth, require_role
 
@@ -314,6 +315,85 @@ def approval_decide(approval_id):
     return jsonify({"approval": result})
 
 
+# ------------------------------ 写数据能力（§8.5） ------------------------------ #
+@app.get("/api/writes/pending")
+@require_auth
+def writes_pending():
+    """我能批的写草案（按角色过滤：required_role <= 我的角色）。"""
+    role = int(g.current_user.get("role", 1))
+    return jsonify({"items": hitl.manager.list_pending_writes(min_role=role)})
+
+
+@app.post("/api/writes/<proposal_id>/decide")
+@require_auth
+def writes_decide(proposal_id):
+    """批准或拒绝一条写草案。按 required_role 鉴权（角色只从 token 反查）。"""
+    payload = _json_payload()
+    decision = (payload.get("decision") or "").strip().lower()
+    if decision not in {"approve", "reject"}:
+        return jsonify({"error": "decision 只能是 approve 或 reject"}), 400
+    try:
+        result = hitl.manager.resolve(
+            proposal_id,
+            decision,
+            payload.get("message") or "",
+            None,
+            user_id=g.current_user_id,
+            user_role=g.current_user.get("role"),
+        )
+    except hitl.ApprovalForbidden as exc:
+        return jsonify({"error": str(exc)}), 403
+    except (hitl.ApprovalError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    if result is None:
+        return jsonify({"error": "草案不存在、已处理或已超时。"}), 404
+
+    # 批准后执行写变更
+    if decision == "approve":
+        proposal = hitl.manager.get_write_payload(proposal_id)
+        if proposal:
+            exec_result = write_executor.execute(
+                proposal,
+                approval_id=proposal_id,
+                actor_id=g.current_user_id,
+                actor_name=g.current_user.get("username", ""),
+                approver_id=g.current_user_id,
+                approver_name=g.current_user.get("username", ""),
+            )
+            return jsonify({"approval": result, "execution": exec_result})
+    return jsonify({"approval": result})
+
+
+@app.get("/api/writes/history")
+@require_role(2)
+def writes_history():
+    """变更历史（分页，管理员/超管）。"""
+    try:
+        limit = int(request.args.get("limit", 50))
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        limit, offset = 50, 0
+    status = request.args.get("status") or None
+    return jsonify({"items": write_executor.history(limit=limit, offset=offset, status=status)})
+
+
+@app.post("/api/writes/<change_id>/revert")
+@require_role(2)
+def writes_revert(change_id):
+    """撤销一条已应用的变更（L2 起需二次审批，此处由路由层角色守卫）。"""
+    try:
+        result = write_executor.revert(
+            change_id,
+            actor_id=g.current_user_id,
+            actor_name=g.current_user.get("username", ""),
+        )
+    except Exception as exc:
+        return jsonify(debugging.error_payload(exc, context="writes_revert")), 500
+    if not result.get("ok"):
+        return jsonify({"error": result.get("message", "撤销失败")}), 400
+    return jsonify(result)
+
+
 # -------------------- 管理员上传：统一目录 + 落盘即解析 -------------------- #
 @app.get("/api/uploads")
 @require_auth
@@ -442,6 +522,9 @@ def chat():
         {"type": "token", "content": "字增量"}     前端逐字拼成完整回答
         {"type": "tool",  "name": "calculator"}    模型开始调用某工具
         {"type": "approval_required", ...}            高风险工具暂停，等待人工批准/拒绝
+        {"type": "write_proposal", ...}               写数据变更草案生成，等待审批
+        {"type": "write_applied", ...}                写变更已批准并执行完成
+        {"type": "write_rejected", ...}               写变更被拒绝或超时，未改动数据
         {"type": "done",  "thread_id", "answer", "plan"}        本轮结束
         {"type": "error", "message": "...", "error_id": "..."}  中途出错（本回合不入历史）
 

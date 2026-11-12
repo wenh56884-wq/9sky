@@ -8,6 +8,8 @@ import UploadPanel from './components/UploadPanel.vue'
 import DataPreview from './components/DataPreview.vue'
 import SourceDrawer from './components/SourceDrawer.vue'
 import ApprovalCenter from './components/ApprovalCenter.vue'
+import ToastHost from './components/ToastHost.vue'
+import ConfirmHost from './components/ConfirmHost.vue'
 import LoginView from './views/LoginView.vue'
 import UserManage from './views/UserManage.vue'
 import { useAuthStore } from './stores/auth'
@@ -101,4 +103,8 @@ watch(() => auth.loggedIn, (v) => {
     </main>
     <ApprovalCenter />
   </div>
+
+  <!-- U1：全局 Toast 与确认弹窗（任何视图可用） -->
+  <ToastHost />
+  <ConfirmHost />
 </template>

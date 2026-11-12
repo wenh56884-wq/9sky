@@ -1,6 +1,7 @@
 // 资料上传编排：面板开关、文件列表、上传、删除、预览、令牌、toast
 import { reactive, readonly } from 'vue'
 import { asJson, upQuery, authFetch } from '../api'
+import { confirm as askConfirm } from './useConfirm'
 
 const state = reactive({
   panelOpen: false,
@@ -84,7 +85,13 @@ async function uploadFiles(fileList) {
 }
 
 async function deleteUpload(name) {
-  if (!confirm('删除 ' + name + '？索引与记忆会一并清理。')) return
+  const ok = await askConfirm({
+    title: '删除资料',
+    text: '删除 ' + name + '？索引与记忆会一并清理。',
+    okText: '删除',
+    danger: true,
+  })
+  if (!ok) return
   try {
     const res = await authFetch(upQuery('/api/uploads/' + encodeURIComponent(name), state.token), { method: 'DELETE' })
     await asJson(res)
