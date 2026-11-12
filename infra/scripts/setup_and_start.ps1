@@ -1,0 +1,249 @@
+﻿# ============================================================
+#  九天梧桐 AI 工作台 -- 一键启动脚本
+#  首次运行：自动下载并配置 MySQL（绿色免安装）-> 导入内置数据 -> 启动网页
+#  再次运行：直接启动网页（秒开）
+#  数据库运行环境固定放在 C:\ProgramData\JiuTianWuTong（纯英文路径，避免中文路径兼容问题）
+#  全程无需管理员权限；请保持网络连接（下载引擎 / 调用大模型均需联网）
+# ============================================================
+$ErrorActionPreference = "Continue"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$Root     = Split-Path -Parent $PSScriptRoot
+$PyExe    = Join-Path $Root "infra\runtime\python\python.exe"
+$AppDir   = Join-Path $Root "backend"
+# 数据库运行环境放固定英文路径（不随包解压位置变化，规避中文路径/中文用户名兼容问题）
+$DataHome = "C:\ProgramData\JiuTianWuTong"
+$MyRoot   = Join-Path $DataHome "mysql"
+$MySrv    = Join-Path $MyRoot "server"
+$MyData   = Join-Path $MyRoot "data"
+$MyIni    = Join-Path $MyRoot "my.ini"
+$MyExe    = Join-Path $MySrv "bin\mysqld.exe"
+$MyCli    = Join-Path $MySrv "bin\mysql.exe"
+$SqlDir   = Join-Path $Root "infra\sql"
+$LogDir   = Join-Path $DataHome "logs"
+$LogFile  = Join-Path $LogDir "setup_log.txt"
+$DbPort  = 3306
+$DbPass  = "123456"
+
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+function Say   ($m, $c = "White") { Write-Host $m -ForegroundColor $c }
+function Log   ($m) { Add-Content -Path $LogFile -Value ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $m) -Encoding UTF8 }
+function Fatal ($m) {
+    Say ""
+    Say "[X] $m" Red
+    Say "    详细日志：$LogFile" Yellow
+    Say "    如多次失败，请联系作者（可在日志中查看具体原因）" Yellow
+    Read-Host "按回车键退出"
+    exit 1
+}
+function Test-TcpPort ($p) {
+    try { $c = New-Object Net.Sockets.TcpClient; $c.Connect("127.0.0.1", $p); $c.Close(); return $true } catch { return $false }
+}
+
+Say "============================================================" Cyan
+Say "   九天梧桐 AI 工作台" Cyan
+Say "============================================================" Cyan
+Say ""
+Log "=== 启动脚本运行 ==="
+
+# ---------- 0. 预检 ----------
+if (-not (Test-Path $PyExe)) { Fatal "缺少 runtime\python（发布包不完整），请重新解压完整压缩包" }
+if (-not (Test-Path (Join-Path $AppDir "web.py"))) { Fatal "缺少 app\web.py（发布包不完整）" }
+foreach ($f in @("financial_asset_management.sql", "healthcare_analytics_competition.sql", "telecom_operations_db.sql")) {
+    if (-not (Test-Path (Join-Path $SqlDir $f))) { Fatal "缺少数据文件 data_sql\$f" }
+}
+Say "[1/5] 发布包完整性检查通过" Green
+
+$driveName = (Get-Item $Root).PSDrive.Name
+$freeGB = [math]::Round((Get-PSDrive $driveName).Free / 1GB, 1)
+Say ("[2/5] 磁盘剩余 {0} GB（首次运行建议预留 4 GB 以上）" -f $freeGB) Green
+if ($freeGB -lt 4) { Say "      [提示] 磁盘空间偏少，如后续报错请清理空间后重试" Yellow }
+
+# ---------- 1. 首次配置：安装或下载 MySQL 引擎 ----------
+$needSetup = -not (Test-Path (Join-Path $MyRoot ".configured"))
+
+# 1.0 最快路径：发布包内自带预装数据库（引擎+数据），复制到固定位置即可（约 1~3 分钟）
+if ((-not (Test-Path (Join-Path $MyRoot ".configured"))) -and (Test-Path (Join-Path $Root "infra\mysql\.configured"))) {
+    Say ""
+    Say "[3/5] 正在安装内置数据库引擎与数据（约 1~3 分钟，请耐心等待）..." Yellow
+    New-Item -ItemType Directory -Force -Path $MyRoot | Out-Null
+    robocopy (Join-Path $Root "infra\mysql") $MyRoot /E /MT:8 /NFL /NDL /NJH /NJS /NP | Out-Null
+    if (-not (Test-Path $MyExe)) { Fatal "内置数据库安装失败（请检查磁盘空间或安全软件拦截）" }
+    Say "      内置数据库安装完成" Green
+    Log "已复制预装数据库到 $MyRoot"
+    $needSetup = -not (Test-Path (Join-Path $MyRoot ".configured"))
+}
+
+if ($needSetup) {
+    Say ""
+    Say "============================================================" Cyan
+    Say " 首次运行，自动配置（仅需一次，约 3~8 分钟，视网速）" Cyan
+    Say " 流程：下载 MySQL 引擎 -> 初始化 -> 导入三个数据库" Cyan
+    Say "============================================================" Cyan
+    New-Item -ItemType Directory -Force -Path $MyRoot | Out-Null
+
+    # 1.1 下载 MySQL 引擎（已解压过则直接跳过）
+    $zip = Join-Path $MyRoot "mysql.zip"
+    if (Test-Path (Join-Path $MySrv "bin\mysqld.exe")) {
+        Say "[3/5] 已发现解压好的 MySQL 引擎，跳过下载与解压" Green
+        Log "MySQL 引擎已就绪（跳过下载解压）"
+    } else {
+        if ((Test-Path $zip) -and ((Get-Item $zip).Length -gt 100MB)) {
+            Say "[3/5] 已发现下载好的 MySQL 引擎压缩包，跳过下载" Green
+        } else {
+            Say ""
+            Say "[3/5] 正在下载 MySQL 引擎（约 230 MB，请保持网络连接）..." Yellow
+            Say "      下载源：cdn.mysql.com" Gray
+            $url = "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.9-winx64.zip"
+            Log "下载: $url"
+            curl.exe -L --fail --retry 3 -# -o "$zip" "$url"
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $zip) -or (Get-Item $zip).Length -lt 100MB) {
+                Say ""
+                Say "[!] 自动下载失败（可能是网络问题）。请手动下载： " Yellow
+                Say "    $url" White
+                Say "    下载完成后，把文件放到：$MyRoot\mysql.zip" White
+                Say "    然后重新双击 启动.bat 即可（会跳过下载直接继续）" White
+                Fatal "MySQL 引擎下载失败"
+            }
+            Say "      下载完成" Green
+        }
+        Log "下载完成"
+
+        # 1.2 解压
+        Say "[4/5] 正在解压 MySQL 引擎..." Yellow
+        if (Test-Path $MySrv) { Remove-Item $MySrv -Recurse -Force }
+        $extractTmp = Join-Path $MyRoot "_extract"
+        if (Test-Path $extractTmp) { Remove-Item $extractTmp -Recurse -Force }
+        try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $extractTmp)
+        } catch { Fatal "解压失败：$($_.Exception.Message)" }
+        $inner = Get-ChildItem $extractTmp -Directory | Select-Object -First 1
+        if (-not $inner) { Fatal "解压结果异常" }
+        Move-Item $inner.FullName $MySrv
+        Remove-Item $extractTmp -Recurse -Force
+        Remove-Item $zip -Force
+        Say "      解压完成" Green
+    }
+
+    # 1.3 初始化数据目录
+    Say "[5/5] 初始化数据库并导入数据（约 2~4 分钟，请耐心等待）..." Yellow
+    if (Test-Path $MyData) { Remove-Item $MyData -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $MyData | Out-Null
+    $srvSlash  = $MySrv.Replace('\', '/')
+    $dataSlash = $MyData.Replace('\', '/')
+    @"
+[mysqld]
+basedir=$srvSlash
+datadir=$dataSlash
+port=$DbPort
+character-set-server=utf8mb4
+collation-server=utf8mb4_0900_ai_ci
+max_connections=200
+skip-log-bin
+innodb_flush_log_at_trx_commit=2
+innodb_buffer_pool_size=512M
+innodb_redo_log_capacity=512M
+max_allowed_packet=256M
+"@ | Set-Content -Path $MyIni -Encoding Ascii
+
+    Log "开始初始化 MySQL"
+    & $MyExe "--defaults-file=$MyIni" --initialize-insecure --console 2>&1 |
+        ForEach-Object { $_ | Tee-Object -FilePath $LogFile -Append }
+    if (-not (Test-Path (Join-Path $MyData "mysql"))) { Fatal "MySQL 初始化失败（详见日志）" }
+    Say "      初始化完成，正在启动数据库服务..." Green
+
+    Start-Process -FilePath $MyExe -ArgumentList "--defaults-file=`"$MyIni`"" -WindowStyle Hidden
+    $ready = $false
+    for ($i = 0; $i -lt 60; $i++) {
+        Start-Sleep -Seconds 1
+        & $MyCli -u root --protocol=TCP -h 127.0.0.1 -P $DbPort --connect-timeout=2 -e "SELECT 1;" 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+    }
+    if (-not $ready) { Fatal "数据库服务启动超时" }
+
+    & $MyCli -u root --protocol=TCP -h 127.0.0.1 -P $DbPort -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$DbPass'; FLUSH PRIVILEGES;" 2>$null | Out-Null
+    Say "      数据库服务就绪" Green
+
+    # 1.4 建库 + 导入（硬链接到英文临时路径，兼容中文安装目录）
+    $linkDir = Join-Path $env:TEMP "jiutian_import_links"
+    New-Item -ItemType Directory -Force -Path $linkDir | Out-Null
+    $dbs = [ordered]@{
+        "financial_asset_management"       = "financial_asset_management.sql"
+        "healthcare_analytics_competition" = "healthcare_analytics_competition.sql"
+        "telecom_operations_db"            = "telecom_operations_db.sql"
+    }
+    foreach ($db in $dbs.Keys) {
+        & $MyCli -u root "-p$DbPass" --protocol=TCP -h 127.0.0.1 -P $DbPort -e "DROP DATABASE IF EXISTS $db; CREATE DATABASE $db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;" 2>$null
+    }
+    $tAll = Get-Date
+    foreach ($db in $dbs.Keys) {
+        $src = Join-Path $SqlDir $dbs[$db]
+        $lnk = Join-Path $linkDir ($db + ".sql")
+        if (Test-Path $lnk) { Remove-Item $lnk -Force }
+        New-Item -ItemType HardLink -Path $lnk -Target $src | Out-Null
+        $sizeMB = [math]::Round((Get-Item $src).Length / 1MB, 0)
+        Say ("      正在导入 {0}（约 {1} MB）..." -f $db, $sizeMB) Yellow
+        $t0 = Get-Date
+        Log "导入 $db 开始"
+        cmd /c "`"$MyCli`" -u root -p$DbPass --protocol=TCP -h 127.0.0.1 -P $DbPort --default-character-set=utf8mb4 $db < `"$lnk`""
+        if ($LASTEXITCODE -ne 0) { Fatal "导入 $db 失败（详见日志）" }
+        $sec = [math]::Round(((Get-Date) - $t0).TotalSeconds)
+        Log "导入 $db 完成，用时 $sec 秒"
+        Say ("        完成，用时 {0} 秒" -f $sec) Green
+    }
+    Remove-Item $linkDir -Recurse -Force -ErrorAction SilentlyContinue
+
+    $cnt = & $MyCli -u root "-p$DbPass" --protocol=TCP -h 127.0.0.1 -P $DbPort -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema IN ('financial_asset_management','healthcare_analytics_competition','telecom_operations_db');" 2>$null
+    Say ("      数据导入完成：三库共 {0} 张表，总用时 {1} 秒" -f $cnt, [math]::Round(((Get-Date) - $tAll).TotalSeconds)) Green
+    Set-Content -Path (Join-Path $MyRoot ".configured") -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss") -Encoding ascii
+    Log "首次配置完成"
+    Say ""
+    Say " 首次配置全部完成！之后再次启动只需几秒钟。" Green
+} else {
+    Say "[3/5] 检测到已完成首次配置，跳过（直接启动）" Green
+}
+
+# ---------- 2. 确保数据库在运行 ----------
+$dbUp = $false
+& $MyCli -u root "-p$DbPass" --protocol=TCP -h 127.0.0.1 -P $DbPort --connect-timeout=3 -e "SELECT 1;" 2>$null | Out-Null
+$dbUp = ($LASTEXITCODE -eq 0)
+if (-not $dbUp) {
+    Say "[4/5] 正在启动数据库服务..." Yellow
+    Start-Process -FilePath $MyExe -ArgumentList "--defaults-file=`"$MyIni`"" -WindowStyle Hidden
+    for ($i = 0; $i -lt 40 -and -not $dbUp; $i++) {
+        Start-Sleep -Seconds 1
+        & $MyCli -u root "-p$DbPass" --protocol=TCP -h 127.0.0.1 -P $DbPort --connect-timeout=2 -e "SELECT 1;" 2>$null | Out-Null
+        $dbUp = ($LASTEXITCODE -eq 0)
+    }
+    if (-not $dbUp) { Fatal "数据库服务启动失败" }
+    Say "      数据库服务已启动（端口 $DbPort）" Green
+} else {
+    Say "[4/5] 数据库服务运行正常（端口 $DbPort）" Green
+}
+
+# ---------- 3. 启动网页（自动打开浏览器） ----------
+$WebPort = 5001
+while (Test-TcpPort $WebPort) { $WebPort++ }
+
+Say "[5/5] 正在启动网页服务..." Yellow
+Say ""
+Say "------------------------------------------------------------" Cyan
+if ($WebPort -ne 5001) { Say " 提示：默认端口被占用，已自动改用端口 $WebPort" Yellow }
+Say " 浏览器即将自动打开：http://127.0.0.1:$WebPort" Cyan
+Say " 若浏览器没有自动打开，请手动访问上面这个网址" Cyan
+Say " 本窗口即为服务窗口：关闭它 = 停止网页（再次双击 启动.bat 可重新打开）" Cyan
+Say " 彻底退出（连数据库一起关）：双击 停止.bat" Cyan
+Say "------------------------------------------------------------" Cyan
+Say ""
+Log "启动 web，端口 $WebPort"
+
+$env:PORT = "$WebPort"
+$env:HOST = "127.0.0.1"
+Set-Location $AppDir
+& $PyExe (Join-Path $AppDir "web.py")
+
+Say ""
+Say "网页服务已停止。想再次使用，双击 启动.bat 即可。" Green
+Read-Host "按回车键退出"

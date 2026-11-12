@@ -1,0 +1,78 @@
+# =========================================================
+# 九天梧桐 AI 工作台 · 仓库忽略规则
+# 原则：只提交「源码 + 文档 + 构建产物」，不提交依赖、密钥、运行时数据、内置运行时。
+# 详见 docs/FRONTEND-REBUILD-SPEC.md §17（仓库与交付约定）
+# =========================================================
+
+# ---------- 依赖与编译缓存 ----------
+node_modules/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---------- 密钥与本地配置（绝不入库） ----------
+.env
+.env.*
+**/.env
+**/.env.bak_*
+**/.env.local
+!.env.example
+!**/.env.example
+
+# ---------- 运行时数据（首启动自动重建） ----------
+backend/data/
+data/
+uploads/
+reports/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+
+# ---------- 内置运行时与数据库引擎（体积过大） ----------
+infra/runtime/
+infra/mysql/
+infra/downloads/
+infra/*.zip
+infra/*.7z
+
+# ---------- 数据库转储（单文件 80~380MB，超出 GitHub 限制） ----------
+# 需要数据时从 Release 附件或内网网盘获取，见 §17.3
+infra/sql/*.sql
+infra/sql/*.sql.gz
+
+# ---------- 日志与临时 ----------
+*.log
+logs/
+*.tmp
+*.bak
+.cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 工作区私有数据 ----------
+.workbuddy/
+
+# ---------- 运行时用户数据（含真实提问 / 会话 ID，严禁入库） ----------
+backend/knowledge/自动学习/
+backend/knowledge/问答记录/
+
+# ---------- 生成的二进制文档（可由 backend/build_techdoc.py 重建，不便审计） ----------
+docs/*.pdf
+
+# ---------- 前端本地缓存 ----------
+frontend/.vite/
+frontend/node_modules/.vite/
