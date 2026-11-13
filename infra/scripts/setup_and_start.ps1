@@ -258,7 +258,83 @@ max_allowed_packet=256M
     Say "[3/5] 检测到已完成首次配置，跳过（直接启动）" Green
 }
 
+# ---------- 1.6 每次启动都确保专用账号存在（写数据能力兜底，§8.2）----------
+# 首次配置已跳过的情况下，账号可能从未创建，这里补建（幂等：已存在则跳过）
+$envFile = Join-Path $AppDir ".env"
+if (-not (Test-Path $envFile)) {
+    Set-Content -Path $envFile -Value "# 九天梧桐 AI 工作台 - 运行时配置" -Encoding UTF8
+}
+$envContent = ""
+if (Test-Path $envFile) { $envContent = Get-Content $envFile -Raw }
+
+function _ensure_account ($sql) {
+    & $MyCli -u root "-p$DbPass" --protocol=TCP -h 127.0.0.1 -P $DbPort -e $sql 2>$null
+    if ($LASTEXITCODE -ne 0) { Log "账号创建失败：$sql" }
+}
+
+# jt_read / jt_write / jt_admin 已存在则跳过，不存在则创建
+$acctCheck = & $MyCli -u root "-p$DbPass" --protocol=TCP -h 127.0.0.1 -P $DbPort -N -B -e "SELECT user FROM mysql.user WHERE user IN ('jt_read','jt_write','jt_admin');" 2>$null
+$existingAccts = @($acctCheck | ForEach-Object { $_.Trim() })
+
+if ($existingAccts.Count -lt 3) {
+    Say ""
+    Say "正在确保数据库专用账号存在..." Yellow
+    function _gen_pass2 {
+        $b = New-Object byte[] 18
+        [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+        $s = [System.Convert]::ToBase64String($b) -replace '[/+]','_' -replace '[=]',''
+        return $s.Substring(0, 24)
+    }
+    $readPass  = _gen_pass2
+    $writePass = _gen_pass2
+    $adminPass = _gen_pass2
+
+    if ($existingAccts -notcontains 'jt_read') {
+        $sqlRead = "CREATE USER IF NOT EXISTS 'jt_read'@'localhost' IDENTIFIED BY '$readPass';" +
+            " GRANT SELECT ON financial_asset_management.* TO 'jt_read'@'localhost';" +
+            " GRANT SELECT ON healthcare_analytics_competition.* TO 'jt_read'@'localhost';" +
+            " GRANT SELECT ON telecom_operations_db.* TO 'jt_read'@'localhost';"
+        _ensure_account $sqlRead
+        Say "      jt_read 已创建" Green
+    }
+    if ($existingAccts -notcontains 'jt_write') {
+        $sqlWrite = "CREATE USER IF NOT EXISTS 'jt_write'@'localhost' IDENTIFIED BY '$writePass';"
+        _ensure_account $sqlWrite
+        Say "      jt_write 已创建" Green
+    }
+    if ($existingAccts -notcontains 'jt_admin') {
+        $sqlAdmin = "CREATE USER IF NOT EXISTS 'jt_admin'@'localhost' IDENTIFIED BY '$adminPass';" +
+            " GRANT ALL ON financial_asset_management.* TO 'jt_admin'@'localhost';" +
+            " GRANT ALL ON healthcare_analytics_competition.* TO 'jt_admin'@'localhost';" +
+            " GRANT ALL ON telecom_operations_db.* TO 'jt_admin'@'localhost';"
+        _ensure_account $sqlAdmin
+        Say "      jt_admin 已创建" Green
+    }
+    # 写入 .env（仅当变量不存在时追加）
+    $needEnvWrite = $false
+    if ($envContent -notmatch 'DB_USER_READ')  { $needEnvWrite = $true }
+    if ($envContent -notmatch 'DB_USER_WRITE') { $needEnvWrite = $true }
+    if ($envContent -notmatch 'DB_USER_ADMIN') { $needEnvWrite = $true }
+    if ($needEnvWrite) {
+        Add-Content -Path $envFile -Encoding UTF8 -Value @(
+            "# --- 数据库专用账号（启动脚本自动生成） ---",
+            "DB_USER_READ=$readPass",
+            "DB_USER_WRITE=$writePass",
+            "DB_USER_ADMIN=$adminPass"
+        )
+        Log "数据库专用账号口令已写入 $envFile"
+    }
+} else {
+    Log "数据库专用账号已存在，跳过创建"
+}
+
 # ---------- 2. 确保数据库在运行 ----------
+# 先清理残留 mysqld 进程（端口不匹配或上次未正常退出时避免持锁）
+Get-Process mysqld -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($MyRoot, [System.StringComparison]::OrdinalIgnoreCase) } |
+    ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 2
+
 $dbUp = $false
 & $MyCli -u root "-p$DbPass" --protocol=TCP -h 127.0.0.1 -P $DbPort --connect-timeout=3 -e "SELECT 1;" 2>$null | Out-Null
 $dbUp = ($LASTEXITCODE -eq 0)
