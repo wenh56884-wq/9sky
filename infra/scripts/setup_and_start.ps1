@@ -276,40 +276,50 @@ function _ensure_account ($sql) {
 $acctCheck = & $MyCli -u root "-p$DbPass" --protocol=TCP -h 127.0.0.1 -P $DbPort -N -B -e "SELECT user FROM mysql.user WHERE user IN ('jt_read','jt_write','jt_admin');" 2>$null
 $existingAccts = @($acctCheck | ForEach-Object { $_.Trim() })
 
-if ($existingAccts.Count -lt 3) {
+# 无条件执行（不再用 Count -lt 3 跳过）：每次启动都把库里的口令对齐到 .env，
+# 修掉历史版本 CREATE USER IF NOT EXISTS 造成的「口令漂移 → Access denied」。
+if ($true) {
     Say ""
-    Say "正在确保数据库专用账号存在..." Yellow
+    Say "正在确保数据库专用账号就绪..." Yellow
     function _gen_pass2 {
         $b = New-Object byte[] 18
         [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
         $s = [System.Convert]::ToBase64String($b) -replace '[/+]','_' -replace '[=]',''
         return $s.Substring(0, 24)
     }
-    $readPass  = _gen_pass2
-    $writePass = _gen_pass2
-    $adminPass = _gen_pass2
+    # 关键：优先沿用 .env 里已有的口令，保证「库里的口令」与「应用读到的口令」永远一致。
+    # 早期版本用 CREATE USER IF NOT EXISTS，账号已存在时不改密码，
+    # 导致 .env 换了新口令而库里还是旧口令 → 应用连库被拒（Access denied）。
+    function _read_env_pass ($key, $fallback) {
+        if ($envContent -match "(?m)^\s*$key\s*=\s*(\S+)\s*$") { return $Matches[1] }
+        return $fallback
+    }
+    $readPass  = _read_env_pass 'DB_USER_READ'  (_gen_pass2)
+    $writePass = _read_env_pass 'DB_USER_WRITE' (_gen_pass2)
+    $adminPass = _read_env_pass 'DB_USER_ADMIN' (_gen_pass2)
 
-    if ($existingAccts -notcontains 'jt_read') {
-        $sqlRead = "CREATE USER IF NOT EXISTS 'jt_read'@'localhost' IDENTIFIED BY '$readPass';" +
-            " GRANT SELECT ON financial_asset_management.* TO 'jt_read'@'localhost';" +
-            " GRANT SELECT ON healthcare_analytics_competition.* TO 'jt_read'@'localhost';" +
-            " GRANT SELECT ON telecom_operations_db.* TO 'jt_read'@'localhost';"
-        _ensure_account $sqlRead
-        Say "      jt_read 已创建" Green
-    }
-    if ($existingAccts -notcontains 'jt_write') {
-        $sqlWrite = "CREATE USER IF NOT EXISTS 'jt_write'@'localhost' IDENTIFIED BY '$writePass';"
-        _ensure_account $sqlWrite
-        Say "      jt_write 已创建" Green
-    }
-    if ($existingAccts -notcontains 'jt_admin') {
-        $sqlAdmin = "CREATE USER IF NOT EXISTS 'jt_admin'@'localhost' IDENTIFIED BY '$adminPass';" +
-            " GRANT ALL ON financial_asset_management.* TO 'jt_admin'@'localhost';" +
-            " GRANT ALL ON healthcare_analytics_competition.* TO 'jt_admin'@'localhost';" +
-            " GRANT ALL ON telecom_operations_db.* TO 'jt_admin'@'localhost';"
-        _ensure_account $sqlAdmin
-        Say "      jt_admin 已创建" Green
-    }
+    # 逐个账号：先 CREATE IF NOT EXISTS，再 ALTER USER 强制对齐口令（幂等且修漂移）
+    $sqlRead = "CREATE USER IF NOT EXISTS 'jt_read'@'localhost' IDENTIFIED BY '$readPass';" +
+        " ALTER USER 'jt_read'@'localhost' IDENTIFIED BY '$readPass';" +
+        " GRANT SELECT ON financial_asset_management.* TO 'jt_read'@'localhost';" +
+        " GRANT SELECT ON healthcare_analytics_competition.* TO 'jt_read'@'localhost';" +
+        " GRANT SELECT ON telecom_operations_db.* TO 'jt_read'@'localhost';"
+    _ensure_account $sqlRead
+    Say "      jt_read 已就绪" Green
+
+    $sqlWrite = "CREATE USER IF NOT EXISTS 'jt_write'@'localhost' IDENTIFIED BY '$writePass';" +
+        " ALTER USER 'jt_write'@'localhost' IDENTIFIED BY '$writePass';"
+    _ensure_account $sqlWrite
+    Say "      jt_write 已就绪" Green
+
+    $sqlAdmin = "CREATE USER IF NOT EXISTS 'jt_admin'@'localhost' IDENTIFIED BY '$adminPass';" +
+        " ALTER USER 'jt_admin'@'localhost' IDENTIFIED BY '$adminPass';" +
+        " GRANT ALL ON financial_asset_management.* TO 'jt_admin'@'localhost';" +
+        " GRANT ALL ON healthcare_analytics_competition.* TO 'jt_admin'@'localhost';" +
+        " GRANT ALL ON telecom_operations_db.* TO 'jt_admin'@'localhost';"
+    _ensure_account $sqlAdmin
+    Say "      jt_admin 已就绪" Green
+
     # 写入 .env（仅当变量不存在时追加）
     $needEnvWrite = $false
     if ($envContent -notmatch 'DB_USER_READ')  { $needEnvWrite = $true }

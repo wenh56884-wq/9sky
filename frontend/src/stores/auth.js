@@ -35,9 +35,17 @@ export const ROLE_LABELS = {
   3: '超级管理员',
 }
 
+// ---- 时序修复：store 模块加载时就把本地令牌注入请求层 ----
+// 为什么必须在模块级做：刷新页面后各组件 onMounted 会立刻发请求（如 Composer 拉
+// /api/models、/api/skills），若等到 App.vue 的 onMounted 才 setToken，这些先发的
+// 请求会 401，触发 handleUnauthorized 清空登录态 —— 表现为「刷新一下就要重新登录」。
+// 这里在模块加载期（早于任何组件挂载）注入 token，保证首个请求就带 Authorization。
+const _initialToken = loadToken()
+if (_initialToken) setToken(_initialToken)
+
 export const useAuthStore = defineStore('auth', {
   state: () => ({
-    token: loadToken(),
+    token: _initialToken,
     user: loadUser(),
     expiredNotice: '',   // 401 失效时给登录页的提示文案
   }),

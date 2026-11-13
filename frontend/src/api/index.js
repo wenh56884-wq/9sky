@@ -25,6 +25,10 @@ function authHeaders(extra) {
 }
 
 function handleUnauthorized() {
+  // 只有确实带着令牌还被拒，才说明令牌失效（该回登录页）。
+  // 没带令牌的匿名请求被 401 时不清登录态——否则页面初始化时若有请求抢在
+  // setToken 之前发出，会把刚恢复的登录态误清掉（表现为刷新就掉登录）。
+  if (!_token) return
   _token = ''
   if (typeof _onUnauthorized === 'function') _onUnauthorized()
 }

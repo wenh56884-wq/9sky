@@ -91,7 +91,11 @@ export const useChatStore = defineStore('chat', {
     addAssistantMessage() {
       const msg = assistantSkeleton()
       this.messages.push(msg)
-      return msg
+      // 关键：必须返回数组里的响应式代理，而不是 push 前的原始对象。
+      // Pinia state 数组 push 后，this.messages[i] 才是被 reactive 包装的代理；
+      // 直接返回 msg 会让 useChat 的流式写入落在原始对象上，Vue 检测不到变化
+      // ——表现为“回答不显示，刷新后才看到”。
+      return this.messages[this.messages.length - 1]
     },
 
     // 发送问题：编排用户消息 → assistant 消息 → 流式 → 收尾
