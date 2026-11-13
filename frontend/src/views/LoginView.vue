@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useAuthStore } from '../stores/auth'
+import { brand } from '../brand'
 
 const auth = useAuthStore()
 
@@ -75,6 +76,41 @@ function cancelChange() {
 
 <template>
   <div class="login-page">
+    <!-- 左侧品牌展示区：桌面端呈现产品定位与能力，窄屏自动隐藏 -->
+    <aside class="login-aside" aria-hidden="true">
+      <div class="la-top">
+        <div class="la-logo">梧</div>
+        <div class="la-name">{{ brand.name }}<span>AI 工作台</span></div>
+      </div>
+
+      <div class="la-hero">
+        <h1>用一句话，<br>问清你的业务数据</h1>
+        <p>自然语言直连业务库，只读查询、知识库检索、趋势预测，全程可追溯；涉及写入的操作先进入审批，由人确认后执行。</p>
+      </div>
+
+      <ul class="la-feats">
+        <li>
+          <span class="la-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></span>
+          <div><b>业务数据</b><small>打通业务库，只读 SQL 由系统校验后执行</small></div>
+        </li>
+        <li>
+          <span class="la-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M8 7h8M8 11h6"/></svg></span>
+          <div><b>知识库检索</b><small>文档切片与向量召回，回答带原文出处</small></div>
+        </li>
+        <li>
+          <span class="la-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-6 4 3 5-7 4 4"/><path d="M3 21h18"/></svg></span>
+          <div><b>趋势预测</b><small>基于历史数据建模，输出可解释的预测区间</small></div>
+        </li>
+        <li>
+          <span class="la-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg></span>
+          <div><b>人机协同</b><small>写操作按风险分级审批，全程留痕可回滚</small></div>
+        </li>
+      </ul>
+
+      <div class="la-foot">本地部署 · 数据不出内网</div>
+    </aside>
+
+    <div class="login-main">
     <div class="login-card">
       <div class="login-brand">
         <div class="logo">梧</div>
@@ -134,5 +170,6 @@ function cancelChange() {
       </form>
     </div>
     <p class="login-foot">九天梧桐 AI 工作台 · 登录后按角色进入工作台</p>
+    </div>
   </div>
 </template>
