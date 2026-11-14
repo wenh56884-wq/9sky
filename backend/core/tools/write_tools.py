@@ -18,7 +18,15 @@ from datetime import datetime, timedelta
 from langchain_core.tools import tool
 
 from services.ops import hitl, sanitize
-from services.ops.write_gate import RISK_L1, RISK_L2, RISK_L3, evaluate
+from services.ops.write_gate import (
+    RISK_L1,
+    RISK_L2,
+    RISK_L3,
+    evaluate,
+    insert_row_count,
+    parse_insert,
+    parse_sql_literal,
+)
 
 # 风险 → 超时时长（§8.5）
 _RISK_TIMEOUT = {
@@ -57,21 +65,8 @@ def _parse_set_values(sql: str) -> dict[str, str]:
 
 
 def _parse_sql_literal(val_str: str):
-    """把 SQL 字面量字符串解析为 Python 值。"""
-    val_str = val_str.strip()
-    if val_str.upper() == "NULL":
-        return None
-    if (val_str.startswith("'") and val_str.endswith("'")) or (
-        val_str.startswith('"') and val_str.endswith('"')
-    ):
-        return val_str[1:-1].replace("''", "'")
-    try:
-        return int(val_str)
-    except ValueError:
-        try:
-            return float(val_str)
-        except ValueError:
-            return val_str
+    """把 SQL 字面量字符串解析为 Python 值（实现与风控闸门共用）。"""
+    return parse_sql_literal(val_str)
 
 
 def _get_pk_column(conn, database: str, table: str) -> str | None:
@@ -87,10 +82,10 @@ def _get_pk_column(conn, database: str, table: str) -> str | None:
 
 
 def _compute_estimated_rows(conn, database: str, table: str,
-                            operation: str, where_clause: str) -> int:
-    """用 SELECT COUNT(*) 真算影响行数。"""
+                            operation: str, where_clause: str, sql: str = "") -> int:
+    """真算影响行数：INSERT 数 VALUES 组数（支持批量），UPDATE/DELETE 用 SELECT COUNT(*)。"""
     if operation == "INSERT":
-        return 1
+        return insert_row_count(sql)
     if not where_clause:
         return 0
     count_sql = f"SELECT COUNT(*) FROM {database}.{table} WHERE {where_clause}"
@@ -103,7 +98,10 @@ def _compute_estimated_rows(conn, database: str, table: str,
 def _compute_preview(conn, database: str, table: str, operation: str,
                      sql: str, where_clause: str) -> dict:
     """计算变更前后预览（展示用，过脱敏）。"""
-    pk_col = _get_pk_column(conn, database, table)
+    # INSERT 不需要数据库连接（只解析 SQL 本身）；UPDATE/DELETE 才查主键
+    pk_col = None
+    if operation in ("UPDATE", "DELETE"):
+        pk_col = _get_pk_column(conn, database, table)
     set_values = _parse_set_values(sql) if operation == "UPDATE" else {}
 
     if operation == "UPDATE":
@@ -149,20 +147,17 @@ def _compute_preview(conn, database: str, table: str, operation: str,
         if operation == "DELETE":
             after_rows = []
     elif operation == "INSERT":
-        # 从 INSERT 语句解析列与值
-        m = re.search(
-            r"\bINSERT\s+INTO\s+[\w.`]+\s*\(([^)]+)\)\s*VALUES\s*\((.+)\)",
-            sql, re.IGNORECASE | re.DOTALL,
-        )
-        if m:
-            cols = [c.strip().strip("`") for c in m.group(1).split(",")]
-            vals_str = m.group(2)
-            # 简单按逗号分割（不处理嵌套括号，够用于预览）
-            vals = [_parse_sql_literal(v.strip()) for v in vals_str.split(",")]
+        # 解析 INSERT 的列与全部取值行（支持一条语句多组 VALUES 的批量新增）
+        parsed = parse_insert(sql)
+        if parsed:
+            cols, raw_rows = parsed
             columns = cols
-            after_vals = [sanitize.mask_text(str(v)) if v is not None else None for v in vals]
-            after_rows = [after_vals]
             before_rows = []
+            for raw_vals in raw_rows[:_SAMPLE_LIMIT]:
+                vals = [_parse_sql_literal(v) for v in raw_vals]
+                after_rows.append([
+                    sanitize.mask_text(str(v)) if v is not None else None for v in vals
+                ])
 
     return {
         "columns": columns,
@@ -179,6 +174,9 @@ def propose_write(database: str, table: str, operation: str, sql: str, reason: s
     仅当用户明确要求修改/新增/删除业务数据时调用。
     operation 只能是 INSERT / UPDATE / DELETE。
     UPDATE/DELETE 必须提供精确 WHERE，并说明变更原因 reason。
+    INSERT 支持批量新增：一条语句里写多组 VALUES，例如
+      INSERT INTO 库.表 (col1, col2) VALUES (v1, v2), (v3, v4), (v5, v6)
+    单次最多 5000 行（按行数自动判定 L1/L2/L3 审批级别），超过请拆成多批。
     返回草案 ID、影响行数预估、变更前后预览；真正执行需要相应角色批准。
     """
     op = (operation or "").strip().upper()
@@ -202,7 +200,7 @@ def propose_write(database: str, table: str, operation: str, sql: str, reason: s
 
     try:
         where_clause = _extract_where(sql, op)
-        estimated_rows = _compute_estimated_rows(conn, database, table, op, where_clause)
+        estimated_rows = _compute_estimated_rows(conn, database, table, op, where_clause, sql)
 
         # 风控闸门
         gate_result = evaluate(sql, database=database, table=table,

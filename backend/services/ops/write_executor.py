@@ -33,7 +33,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from services.ops import debugging
-from services.ops.write_gate import _detect_columns, _detect_operation, _detect_table
+from services.ops.write_gate import (
+    _detect_columns,
+    _detect_operation,
+    _detect_table,
+    parse_insert,
+    parse_sql_literal,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
@@ -209,10 +215,23 @@ def _record_before(conn, database: str, table: str, operation: str,
 
     - UPDATE：SELECT 主键 + 被改列 WHERE where_clause
     - DELETE：SELECT * WHERE where_clause（撤销需整行）
-    - INSERT：无 before，返回 "[]"
+    - INSERT：INSERT 显式给出主键列时记录主键值（批量新增逐行记录），撤销时据此
+      反向 DELETE；自增主键无法从字面量得知，返回 "[]"（该插入不支持撤销）。
     """
     if operation == "INSERT":
-        return "[]"
+        parsed = parse_insert(sql)
+        if not parsed:
+            return "[]"
+        cols, raw_rows = parsed
+        pk_col = _get_pk_column(conn, database, table)
+        if not pk_col or pk_col not in cols:
+            return "[]"
+        idx = cols.index(pk_col)
+        keys = [
+            {pk_col: parse_sql_literal(values[idx])}
+            for values in raw_rows if idx < len(values)
+        ]
+        return json.dumps(keys, ensure_ascii=False, default=str)
     pk_col = _get_pk_column(conn, database, table)
     if operation == "UPDATE":
         cols = _detect_columns(sql, "UPDATE")

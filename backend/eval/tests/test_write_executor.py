@@ -341,3 +341,41 @@ def test_hitl_write_list_pending_filters_by_role(temp_hitl_manager):
     ids_r3 = {i["id"] for i in items_r3}
     assert ap1.id in ids_r3
     assert ap3.id in ids_r3
+
+
+# ─────────────────── 批量新增：before 记录与执行 ───────────────────
+
+def test_record_before_insert_explicit_pk():
+    """INSERT 显式给出主键列 → before_json 记录每行主键，撤销时可反向删除。"""
+    conn = _make_mock_conn(pk_col="customer_id")
+    sql = ("INSERT INTO customers (customer_id, status) "
+           "VALUES ('C001','在网'), ('C002','在网')")
+    before = json.loads(write_executor._record_before(
+        conn, "telecom_operations_db", "customers", "INSERT", sql, ""))
+    assert before == [{"customer_id": "C001"}, {"customer_id": "C002"}]
+
+
+def test_record_before_insert_autoincrement_has_no_keys():
+    """自增主键未在 INSERT 中给出 → 无法记录主键（该插入不支持撤销）。"""
+    conn = _make_mock_conn(pk_col="id")
+    sql = "INSERT INTO customers (status) VALUES ('在网'), ('在网')"
+    before = json.loads(write_executor._record_before(
+        conn, "telecom_operations_db", "customers", "INSERT", sql, ""))
+    assert before == []
+
+
+def test_batch_insert_execute(temp_store):
+    """一次性新增多行：estimated_rows 与 affected_rows 一致 → 正常提交。"""
+    sql = ("INSERT INTO customers (customer_id, status) "
+           "VALUES ('C001','在网'), ('C002','在网')")
+    proposal = _make_proposal(
+        operation="INSERT", sql=sql, sql_hash=_sql_hash(sql),
+        where_clause="", estimated_rows=2,
+    )
+    mock_conn = _make_mock_conn(affected_rows=2)
+    with patch("core.agent.db_connect", return_value=mock_conn):
+        result = write_executor.execute(proposal, "appr_insert", "user1")
+    assert result["ok"]
+    assert result["affected_rows"] == 2
+    applied = [e for e in temp_store.list_history() if e["status"] == "applied"]
+    assert applied and applied[0]["operation"] == "INSERT"

@@ -234,3 +234,57 @@ def test_save_whitelist_persists_and_denies_by_default(tmp_path, monkeypatch):
                       database="telecom_operations_db", table="customers", estimated_rows=1)
     assert not result["ok"]
     assert "table_not_whitelisted" in result["hits"]
+
+
+# ---- 批量新增：多行 VALUES 解析与分级 ----
+def test_insert_row_count_multi_rows():
+    assert write_gate.insert_row_count(
+        "INSERT INTO t (a,b) VALUES (1,'x'),(2,'y'),(3,'z')"
+    ) == 3
+
+
+def test_insert_parser_ignores_commas_and_parens_in_strings():
+    sql = "INSERT INTO t (a,b) VALUES (1, 'a,b'), (2, 'c(d)')"
+    cols, rows = write_gate.parse_insert(sql)
+    assert cols == ["a", "b"]
+    assert len(rows) == 2
+    assert rows[0][1] == "'a,b'"
+    assert rows[1][1] == "'c(d)'"
+
+
+def test_insert_set_form_supported():
+    parsed = write_gate.parse_insert("INSERT INTO t SET a=1, b='x'")
+    assert parsed is not None
+    cols, rows = parsed
+    assert cols == ["a", "b"]
+    assert len(rows) == 1
+
+
+def test_insert_select_rejected():
+    _wl("telecom_operations_db", "customers")
+    result = evaluate(
+        "INSERT INTO customers (customer_id) SELECT customer_id FROM customers",
+        database="telecom_operations_db", table="customers",
+    )
+    assert not result["ok"]
+    assert "insert_not_supported" in result["hits"]
+
+
+def test_batch_insert_100_rows_is_l2():
+    _wl("telecom_operations_db", "customers")
+    values = ",".join(f"('C{i:04d}')" for i in range(100))
+    sql = f"INSERT INTO customers (customer_id) VALUES {values}"
+    result = evaluate(sql, database="telecom_operations_db", table="customers")
+    assert result["ok"]
+    assert result["estimated_rows"] == 100
+    assert result["risk"] == RISK_L2
+    assert result["required_role"] == 2
+
+
+def test_batch_insert_over_5000_rejected():
+    _wl("telecom_operations_db", "customers")
+    values = ",".join(f"('C{i}')" for i in range(5001))
+    sql = f"INSERT INTO customers (customer_id) VALUES {values}"
+    result = evaluate(sql, database="telecom_operations_db", table="customers")
+    assert not result["ok"]
+    assert "rows_over_limit" in result["hits"]

@@ -198,6 +198,198 @@ def _strip_literals_and_comments(sql: str) -> str:
     return s
 
 
+# --------------------------------------------------------------------------- #
+# INSERT 解析（批量新增）：结构分析用「等长掩码」，取值用原文切片
+# --------------------------------------------------------------------------- #
+def _mask_sql(sql: str) -> str:
+    """把字符串字面量 / 反引号标识符 / 注释替换为空格，**保持原串长度不变**。
+
+    与 ``_strip_literals_and_comments`` 的区别：本函数逐字符扫描并保留长度，
+    因此同一位置既能在掩码串上做括号匹配，又能回原文切出真实的列与值。
+    正确处理 '' / "" 转义与反斜杠转义，避免值里的括号、逗号、关键字干扰结构分析。
+    """
+    out = list(sql)
+    i, n = 0, len(sql)
+    quote = ""
+    while i < n:
+        ch = sql[i]
+        if quote:
+            out[i] = " "
+            if ch == "\\" and quote in ("'", '"') and i + 1 < n:
+                out[i + 1] = " "
+                i += 2
+                continue
+            if ch == quote:
+                if i + 1 < n and sql[i + 1] == quote:   # '' 转义
+                    out[i + 1] = " "
+                    i += 2
+                    continue
+                quote = ""
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            out[i] = " "
+            i += 1
+            continue
+        if ch == "-" and i + 1 < n and sql[i + 1] == "-":
+            while i < n and sql[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        if ch == "#":
+            while i < n and sql[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and sql[i + 1] == "*":
+            out[i] = out[i + 1] = " "
+            i += 2
+            while i + 1 < n and not (sql[i] == "*" and sql[i + 1] == "/"):
+                out[i] = " "
+                i += 1
+            if i + 1 < n:
+                out[i] = out[i + 1] = " "
+                i += 2
+            continue
+        i += 1
+    return "".join(out)
+
+
+def _match_paren(text: str, open_at: int) -> int:
+    """返回与 ``text[open_at] == '('`` 匹配的右括号下标；找不到返回 -1。"""
+    depth = 0
+    for i in range(open_at, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _split_top_level(text: str, sep: str = ",") -> list[str]:
+    """按顶层分隔符切分（忽略字符串字面量与括号内部的逗号）。"""
+    masked = _mask_sql(text)
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(masked):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == sep and depth == 0:
+            parts.append(text[start:i].strip())
+            start = i + 1
+    parts.append(text[start:].strip())
+    return [p for p in parts if p]
+
+
+def parse_sql_literal(val_str: str):
+    """把 SQL 字面量解析为 Python 值（供预览与 INSERT 回滚记录主键）。"""
+    val_str = val_str.strip()
+    if val_str.upper() == "NULL":
+        return None
+    if (val_str.startswith("'") and val_str.endswith("'")) or (
+        val_str.startswith('"') and val_str.endswith('"')
+    ):
+        return val_str[1:-1].replace("''", "'").replace('""', '"')
+    try:
+        return int(val_str)
+    except ValueError:
+        try:
+            return float(val_str)
+        except ValueError:
+            return val_str
+
+
+def parse_insert(sql: str) -> tuple[list[str], list[list[str]]] | None:
+    """解析 INSERT 语句，返回 ``(列名列表, 每行原始字面量列表)``。
+
+    支持：
+    - ``INSERT [IGNORE] INTO 库.表 (列...) VALUES (...), (...), ...``（多行批量）
+    - ``INSERT INTO 库.表 SET col=val, ...``（MySQL 单行写法）
+    - 无列名写法 ``INSERT INTO 表 VALUES (...)``（列名为空列表）
+    不支持 ``INSERT ... SELECT``（返回 None，由闸门拒绝）——它的影响行数无法按
+    文字面量预估，容易绕过行数上限。
+    """
+    masked = _mask_sql(sql).strip().rstrip(";").rstrip()
+    if not re.match(r"(?is)^INSERT\b", masked):
+        return None
+    head = re.match(
+        r"(?is)^INSERT\s+(?:LOW_PRIORITY\s+|DELAYED\s+|HIGH_PRIORITY\s+|IGNORE\s+)*INTO\s+"
+        r"[`\w.]+",
+        masked,
+    )
+    if not head:
+        return None
+    rest = head.end()
+
+    # 定位 VALUES / SET / SELECT
+    keyword = re.search(r"(?i)\b(VALUES|VALUE|SET|SELECT)\b", masked[rest:])
+    if not keyword:
+        return None
+    kw = keyword.group(1).upper()
+    kw_start = rest + keyword.start()
+    if kw == "SELECT":
+        return None
+
+    # 列清单：INSERT INTO t (a, b) VALUES ...
+    columns: list[str] = []
+    pre = masked[rest:kw_start]
+    open_idx = pre.find("(")
+    if open_idx >= 0:
+        close_idx = _match_paren(pre, open_idx)
+        if close_idx < 0:
+            return None
+        col_text = sql[rest + open_idx + 1:rest + close_idx]
+        columns = [c.strip().strip("`").strip() for c in _split_top_level(col_text)]
+        columns = [c for c in columns if c]
+
+    if kw == "SET":
+        set_text = sql[kw_start + 3:]
+        columns, values = [], []
+        for part in _split_top_level(set_text):
+            cm = re.match(r"\s*[`]?([A-Za-z_][\w]*)[`]?\s*=\s*(.+)$", part, re.S)
+            if not cm:
+                return None
+            columns.append(cm.group(1))
+            values.append(cm.group(2).strip())
+        return columns, [values] if columns else None
+
+    # VALUES：扫描顶层括号组（掩码串做括号匹配，原文取值）
+    tail = masked[kw_start + len(kw):]
+    rows: list[list[str]] = []
+    i = 0
+    while i < len(tail):
+        if tail[i] == "(":
+            end = _match_paren(tail, i)
+            if end < 0:
+                return None
+            raw_group = sql[kw_start + len(kw) + i + 1:kw_start + len(kw) + end]
+            rows.append(_split_top_level(raw_group))
+            i = end + 1
+            continue
+        if tail[i].strip() and tail[i] not in ", \t\r\n":
+            # 顶层出现括号外内容（如 ON DUPLICATE KEY UPDATE / 函数）——结构不确定，拒绝
+            return None
+        i += 1
+    if not rows:
+        return None
+    # 每行列数必须与列清单一致（有列清单时）
+    if columns and any(len(row) != len(columns) for row in rows):
+        return None
+    return columns, rows
+
+
+def insert_row_count(sql: str) -> int:
+    """INSERT 的影响行数 = 顶层 VALUES 组数；无法解析返回 0。"""
+    parsed = parse_insert(sql or "")
+    return len(parsed[1]) if parsed else 0
+
+
 def _detect_operation(sql: str) -> str:
     """提取首关键字（INSERT/UPDATE/DELETE 等）。"""
     probe = _strip_literals_and_comments(sql).strip()
@@ -362,8 +554,20 @@ def evaluate(
             return {"ok": False, "reject_reason": f"敏感列 {col} 禁止写入",
                     "hits": ["sensitive_column"]}
 
-    # 规则 7：影响行数 ≤ 对应级别上限；>5000 不受理
-    est = estimated_rows if estimated_rows is not None else 0
+    # 规则 6.5：INSERT 必须可解析，行数以语句本身为准（支持多行 VALUES / SET；
+    # 拒绝 INSERT ... SELECT 等无法按字面量预估行数的变体，防绕过行数上限）
+    if operation == "INSERT":
+        parsed = parse_insert(stmt)
+        if parsed is None:
+            return {"ok": False,
+                    "reject_reason": "INSERT 仅支持「INSERT INTO 表(列) VALUES (...), (...)...」"
+                                     "或 INSERT ... SET 写法；不支持 INSERT ... SELECT 等变体",
+                    "hits": ["insert_not_supported"]}
+        est = len(parsed[1])
+    else:
+        est = estimated_rows if estimated_rows is not None else 0
+
+    # 规则 7：影响行数 ≤ 对应级别上限；>5000 不受理（批量新增同样受此限制）
     if est > POLICY["max_rows"][RISK_L3]:
         return {"ok": False, "reject_reason": f"影响行数 {est} 超过上限 {POLICY['max_rows'][RISK_L3]}，不受理，请拆批",
                 "hits": ["rows_over_limit"]}
