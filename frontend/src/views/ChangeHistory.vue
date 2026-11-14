@@ -3,9 +3,11 @@
 import { ref, onMounted } from 'vue'
 import { request } from '../api'
 import { useNav } from '../composables/useNav'
+import { useAuthStore } from '../stores/auth'
 import { toast } from '../composables/useToast'
 
 const nav = useNav()
+const auth = useAuthStore()
 
 const items = ref([])
 const loading = ref(false)
@@ -74,7 +76,63 @@ function back() {
   nav.setView('workbench')
 }
 
-onMounted(load)
+// ---- 写权限配置（仅超级管理员）：默认全部拒绝，显式开启的表才受理写草案 ----
+const wlText = ref('{}')
+const wlBusy = ref(false)
+const wlError = ref('')
+const wlMsg = ref('')
+const wlCount = ref(0)
+
+async function loadWhitelist() {
+  if (!auth.isSuper) return
+  wlError.value = ''
+  wlMsg.value = ''
+  try {
+    const data = await request('/api/writes/whitelist')
+    const wl = data.table_whitelist || {}
+    wlText.value = JSON.stringify(wl, null, 2)
+    wlCount.value = Object.keys(wl).length
+  } catch (e) {
+    wlError.value = e.message
+  }
+}
+
+async function saveWhitelist() {
+  wlError.value = ''
+  wlMsg.value = ''
+  let parsed
+  try {
+    parsed = JSON.parse(wlText.value || '{}')
+  } catch (e) {
+    wlError.value = 'JSON 格式不正确：' + e.message
+    return
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    wlError.value = '配置必须是对象：{"库名.表名": {"columns": ["允许列"]}}'
+    return
+  }
+  wlBusy.value = true
+  try {
+    const data = await request('/api/writes/whitelist', {
+      method: 'PUT',
+      body: JSON.stringify({ table_whitelist: parsed }),
+    })
+    const wl = data.table_whitelist || {}
+    wlText.value = JSON.stringify(wl, null, 2)
+    wlCount.value = Object.keys(wl).length
+    wlMsg.value = '已保存并生效'
+    toast.success('写权限配置已更新')
+  } catch (e) {
+    wlError.value = e.message
+  } finally {
+    wlBusy.value = false
+  }
+}
+
+onMounted(() => {
+  load()
+  loadWhitelist()
+})
 </script>
 
 <template>
@@ -98,6 +156,24 @@ onMounted(load)
     </div>
 
     <div class="ch-body">
+      <!-- 写权限配置（超管）：默认拒绝，显式列出的表才允许 Agent 提交写草案 -->
+      <details v-if="auth.isSuper" class="ch-wl">
+        <summary>写权限配置（超级管理员）· 已开启 {{ wlCount }} 张表</summary>
+        <p class="ch-wl-hint">
+          默认全部拒绝。只有在此显式列出的表，Agent 的写草案才会受理（受理后仍需按风险等级审批，L1 本人 / L2 管理员 / L3 超管）。
+          格式：<code>{"库名.表名": {"columns": ["允许列"]}}</code>；保存 <code>{}</code> 恢复全部拒绝。
+        </p>
+        <textarea v-model="wlText" class="ch-wl-text" spellcheck="false" rows="8" aria-label="写表白名单 JSON"></textarea>
+        <div class="ch-wl-actions">
+          <button type="button" class="onb-btn" :disabled="wlBusy" @click="saveWhitelist">
+            {{ wlBusy ? '保存中…' : '保存并生效' }}
+          </button>
+          <button type="button" class="ch-filter" @click="loadWhitelist">重新载入</button>
+          <span v-if="wlError" class="ch-wl-error">{{ wlError }}</span>
+          <span v-else-if="wlMsg" class="ch-wl-ok">{{ wlMsg }}</span>
+        </div>
+      </details>
+
       <p v-if="error" class="ch-empty" style="color: var(--err)">{{ error }}</p>
       <p v-else-if="loading && !items.length" class="ch-empty">加载中…</p>
       <p v-else-if="!items.length" class="ch-empty">暂无变更记录</p>

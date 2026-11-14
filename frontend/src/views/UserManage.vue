@@ -67,6 +67,23 @@ async function changeRole(u, role) {
     if (idx >= 0 && updated) users.value[idx] = { ...users.value[idx], ...updated }
   } catch (e) {
     error.value = '改角色失败：' + e.message
+    load()   // 失败时以后端状态为准，避免下拉框显示与实际角色不一致
+  }
+}
+
+// 超管禅让：唯一超管把身份移交他人；旧超管立即降为管理员并强制下线
+async function transferSuper(u) {
+  const ok = await askConfirm({
+    title: '移交超级管理员',
+    text: '确定把超级管理员身份移交给「' + u.username + '」？移交后你将降为管理员，并需要重新登录。',
+    okText: '确认移交',
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await auth.transferSuper(u.id)
+  } catch (e) {
+    error.value = '移交失败：' + e.message
   }
 }
 
@@ -145,8 +162,11 @@ function fmtTime(v) {
           </label>
           <label class="um-field">
             <span>角色</span>
+            <!-- 超级管理员唯一：创建入口只开放访客/普通用户/管理员 -->
             <select v-model.number="form.role">
-              <option v-for="(label, r) in ROLE_LABELS" :key="r" :value="Number(r)">{{ label }}</option>
+              <template v-for="(label, r) in ROLE_LABELS" :key="r">
+                <option v-if="Number(r) < 3" :value="Number(r)">{{ label }}</option>
+              </template>
             </select>
           </label>
           <button type="button" class="um-create-btn" :disabled="creating" @click="create">
@@ -184,16 +204,26 @@ function fmtTime(v) {
                 <select
                   class="um-role-select"
                   :value="Number(u.role)"
-                  :disabled="auth.user && u.id === auth.user.id"
+                  :disabled="(auth.user && u.id === auth.user.id) || Number(u.role) === 3"
+                  :title="Number(u.role) === 3 ? '唯一超管不可直接改角色；交接请用「移交超管」' : ''"
                   @change="changeRole(u, $event.target.value)"
                 >
-                  <option v-for="(label, r) in ROLE_LABELS" :key="r" :value="Number(r)">{{ label }}</option>
+                  <template v-for="(label, r) in ROLE_LABELS" :key="r">
+                    <option v-if="Number(r) < 3 || Number(u.role) === 3" :value="Number(r)">{{ label }}</option>
+                  </template>
                 </select>
               </td>
               <td class="um-time">{{ fmtTime(u.created_at) }}</td>
               <td class="um-time">{{ fmtTime(u.last_login) }}</td>
               <td class="um-ops">
                 <button type="button" class="um-op" @click="openReset(u)">重置密码</button>
+                <button
+                  v-if="auth.isSuper && auth.user && u.id !== auth.user.id && Number(u.role) < 3"
+                  type="button"
+                  class="um-op"
+                  title="把唯一超级管理员身份移交给该用户（你将降为管理员并重新登录）"
+                  @click="transferSuper(u)"
+                >移交超管</button>
                 <button
                   type="button"
                   class="um-op danger"

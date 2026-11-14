@@ -1613,6 +1613,11 @@ img { max-width: 100%; }
 .login-change-title b { display: block; font-size: var(--t-base); font-weight: 650; }
 .login-change-title small { color: var(--muted); font-size: var(--t-xs); line-height: 1.6; display: block; margin-top: 3px; }
 .login-tip { color: var(--muted-2); font-size: var(--t-2xs); line-height: 1.7; margin: 0; }
+.login-link {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  color: var(--accent); font-family: inherit; font-size: inherit; font-weight: 600;
+}
+.login-link:hover { text-decoration: underline; }
 .login-foot { text-align: center; color: var(--muted-2); font-size: var(--t-2xs); margin: 20px 0 0; }
 
 /* ================= 10. No Access ================= */
@@ -2164,6 +2169,31 @@ img { max-width: 100%; }
 }
 .ch-empty { color: var(--muted); font-size: var(--t-sm); padding: 48px 0; text-align: center; }
 .ch-more { margin: 18px auto 0; display: block; }
+
+/* 写权限配置（超管） */
+.ch-wl {
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--panel); padding: 12px 16px; margin-bottom: 18px;
+}
+.ch-wl summary {
+  cursor: pointer; font-size: var(--t-sm); font-weight: 600; color: var(--ink);
+  list-style: none;
+}
+.ch-wl summary::-webkit-details-marker { display: none; }
+.ch-wl summary::before { content: '▸'; display: inline-block; margin-right: 6px; color: var(--muted-2); transition: transform var(--dur-fast); }
+.ch-wl[open] > summary::before { transform: rotate(90deg); }
+.ch-wl-hint { color: var(--muted); font-size: var(--t-2xs); line-height: 1.7; margin: 10px 0; }
+.ch-wl-hint code { background: var(--panel-2); border-radius: 4px; padding: 1px 5px; font-family: var(--font-mono); }
+.ch-wl-text {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--panel-2); color: var(--ink-600);
+  font-family: var(--font-mono); font-size: var(--t-2xs); line-height: 1.7;
+  padding: 10px 12px;
+}
+.ch-wl-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.ch-wl-error { color: var(--err); font-size: var(--t-2xs); }
+.ch-wl-ok { color: var(--ok); font-size: var(--t-2xs); }
 
 /* ================= 14. Responsive ================= */
 @media (max-width: 1180px) {

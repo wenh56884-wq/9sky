@@ -11,6 +11,19 @@ export const authApi = {
     })
   },
 
+  // 开放注册：body {username, password, confirm} → {user}（新用户固定 role=1）
+  async register(username, password, confirm) {
+    return request('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ username, password, confirm }),
+    })
+  },
+
+  // 注册开关：{open: boolean}，登录页据此显示/隐藏注册入口
+  async registerStatus() {
+    return request('/api/auth/register-status')
+  },
+
   // 登出：销毁当前会话令牌
   async logout() {
     return request('/api/auth/logout', { method: 'POST', body: JSON.stringify({}) })
@@ -54,5 +67,13 @@ export const authApi = {
   // 删除用户（后端限制：不可删自己 / 最后一个超管）
   async deleteUser(id) {
     return request('/api/auth/users/' + encodeURIComponent(id), { method: 'DELETE' })
+  },
+
+  // 超管禅让：把唯一超管身份移交指定用户（旧超管降为管理员并强制下线）
+  async transferSuper(successorId) {
+    return request('/api/auth/super/transfer', {
+      method: 'POST',
+      body: JSON.stringify({ successor_id: successorId }),
+    })
   },
 }

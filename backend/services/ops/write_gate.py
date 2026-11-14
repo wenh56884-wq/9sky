@@ -20,10 +20,27 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import threading
+from pathlib import Path
 
 RISK_L1, RISK_L2, RISK_L3 = "L1", "L2", "L3"
+
+logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# 超管运行时配置的可写表白名单（运行时数据，不入库）；环境变量 WRITE_TABLE_WHITELIST
+# 仍然优先，两者合并生效。文件不存在 = 空名单 = 全部拒绝（安全默认）。
+WHITELIST_FILE = PROJECT_ROOT / "data" / "write_whitelist.json"
+_FILE_LOCK = threading.RLock()
+
+# 配置边界：防止误贴超大 JSON 拖垮写入
+_MAX_TABLES = 200
+_MAX_COLUMNS = 100
+_MAX_NAME_LEN = 64
+_TABLE_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
 
 # 级别 → 批准人角色映射（§8.5）
 RISK_ROLE = {RISK_L1: 1, RISK_L2: 2, RISK_L3: 3}
@@ -82,16 +99,92 @@ def _load_whitelist() -> dict:
         return {}
 
 
+def normalize_whitelist(entries: dict) -> dict:
+    """校验并归一「超管提交的写表白名单」，不合法抛 ValueError（带具体位置）。
+
+    结构：{"库名.表名": {"columns": ["允许列", ...]}}；最多 200 张表、每表 100 列、
+    每个名称 ≤64 字符。列清单不做强制匹配（真正的防线是 column_blacklist 与数据库
+    账号权限），留空表示不额外限制。
+    """
+    if not isinstance(entries, dict):
+        raise ValueError("table_whitelist 必须是对象：{\"库名.表名\": {\"columns\": [...]}}")
+    if len(entries) > _MAX_TABLES:
+        raise ValueError(f"最多配置 {_MAX_TABLES} 张表，收到 {len(entries)} 张")
+    result: dict = {}
+    for key, spec in entries.items():
+        table_key = str(key or "").strip()
+        if not _TABLE_KEY_RE.match(table_key):
+            raise ValueError(f"表名不合法：{table_key!r}（应形如 financial_asset_management.clients）")
+        if not isinstance(spec, dict):
+            raise ValueError(f"{table_key} 的配置必须是对象：{{\"columns\": [...]}}")
+        raw_cols = spec.get("columns") or []
+        if not isinstance(raw_cols, list):
+            raise ValueError(f"{table_key} 的 columns 必须是数组")
+        if len(raw_cols) > _MAX_COLUMNS:
+            raise ValueError(f"{table_key} 配置了 {len(raw_cols)} 列，最多 {_MAX_COLUMNS} 列")
+        cols: list[str] = []
+        for col in raw_cols:
+            name = str(col or "").strip()
+            if not name:
+                continue
+            if len(name) > _MAX_NAME_LEN or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                raise ValueError(f"{table_key} 的列名不合法：{name!r}")
+            if name not in cols:
+                cols.append(name)
+        result[table_key] = {"columns": cols}
+    return result
+
+
+def _load_file_whitelist() -> dict:
+    """读取 data/write_whitelist.json；不存在或损坏一律视为空（全部拒绝）。"""
+    try:
+        raw = WHITELIST_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("write_whitelist.json 解析失败，按空名单处理（全部拒绝）")
+        return {}
+    try:
+        return normalize_whitelist(data if isinstance(data, dict) else {})
+    except ValueError as exc:
+        logger.warning("write_whitelist.json 内容不合法，按空名单处理：%s", exc)
+        return {}
+
+
+def save_whitelist(entries: dict, *, operator: str = "") -> dict:
+    """超管保存写表白名单（运行时持久化到 data/write_whitelist.json，原子替换）。
+
+    默认仍为空 = 全部拒绝；只有超管显式配置的表才允许 Agent 提交写草案。
+    """
+    normalized = normalize_whitelist(entries)
+    with _FILE_LOCK:
+        WHITELIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = WHITELIST_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, WHITELIST_FILE)
+        # 保存即替换：删除某张表时不能靠旧内存残留继续放行
+        POLICY["table_whitelist"] = dict(normalized)
+        for table, spec in _load_whitelist().items():
+            POLICY["table_whitelist"][table] = spec
+    logger.info("写表白名单已更新（operator=%s，%d 张表）", operator or "-", len(normalized))
+    return dict(POLICY["table_whitelist"])
+
+
 def get_whitelist() -> dict:
     """获取当前生效的写表白名单。
 
-    从环境变量 WRITE_TABLE_WHITELIST 加载条目并**合并**到 POLICY["table_whitelist"]，
-    支持运行时变更；环境变量未设置时保持现有配置不变（安全默认：空 {} → 全部拒绝）。
+    合并「运行时文件」与「环境变量 WRITE_TABLE_WHITELIST」，环境变量优先；
+    两者都没有时为空 {} → 全部拒绝（安全默认）。支持运行时变更。
     """
-    loaded = _load_whitelist()
-    for table, spec in loaded.items():
-        POLICY["table_whitelist"][table] = spec
-    return dict(POLICY["table_whitelist"])
+    with _FILE_LOCK:
+        loaded = {**_load_file_whitelist(), **_load_whitelist()}
+        for table, spec in loaded.items():
+            POLICY["table_whitelist"][table] = spec
+        return dict(POLICY["table_whitelist"])
 
 
 

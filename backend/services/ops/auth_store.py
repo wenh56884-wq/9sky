@@ -3,10 +3,18 @@
 独立于现有 4 个库（checkpoints / memory / tables / vector），不污染既有数据。
 首次启动 users 表为空时，从 `.env` 读 `ADMIN_USERNAME`/`ADMIN_PASSWORD` 自动创建
 role=3 超级管理员。
+
+约束（业务规则硬约束，所有入口都绕不过）：
+- **超级管理员全局唯一**：禁止再建第二个超管（``create_user``）；禁止直接把用户
+  升为超管（``update_user_role``）；唯一超管可通过 ``promote_super`` 原子禅让
+  （同事务内旧超管降为管理员、新超管生效，不出现双超管/零超管窗口）。
+- **输入边界**：用户名 3~32 字符且限安全字符集；密码 6~72 字节（bcrypt 算法
+  只取前 72 字节，超长不拒绝会造成「设置了长密码却登不上」的隐性 bug）。
 """
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -28,6 +36,42 @@ ROLE_USER = 1
 ROLE_ADMIN = 2
 ROLE_SUPER = 3
 ROLE_NAMES = {0: "访客", 1: "普通用户", 2: "管理员", 3: "超级管理员"}
+
+# 用户名规则：3~32 个字符；允许中文、字母、数字、下划线、连字符，且至少含一个
+# 字母/数字/中文（避免纯符号 "---" 这类无意义用户名）。用 re.UNICODE 语义，
+# \w 在 str 模式下天然覆盖中文。
+_USERNAME_RE = re.compile(r"^(?=.*\w)[\w\-]{3,32}$", re.UNICODE)
+
+# bcrypt 算法硬限制：只处理密码的前 72 字节，超长部分被静默丢弃——
+# 必须在入口显式拒绝，否则用户「设置成功却永远登不上」
+_BCRYPT_MAX_BYTES = 72
+
+
+def validate_username(username: str) -> str:
+    """校验并归一用户名：去首尾空白，检查长度与字符集。不合法抛 ValueError。"""
+    name = (username or "").strip()
+    if not name:
+        raise ValueError("用户名不能为空")
+    if len(name) < 3:
+        raise ValueError("用户名至少 3 个字符")
+    if len(name) > 32:
+        raise ValueError("用户名最多 32 个字符")
+    if not _USERNAME_RE.match(name):
+        raise ValueError("用户名只能包含中文、字母、数字、下划线或连字符")
+    return name
+
+
+def validate_password(password: str) -> str:
+    """校验密码：非空、非纯空白、6~72 字节（UTF-8 计）。不合法抛 ValueError。"""
+    pwd = password or ""
+    if not pwd.strip():
+        raise ValueError("密码不能为空")
+    if len(pwd.strip()) < 6:
+        raise ValueError("密码至少 6 位")
+    size = len(pwd.encode("utf-8"))
+    if size > _BCRYPT_MAX_BYTES:
+        raise ValueError(f"密码过长（UTF-8 编码后 {size} 字节，上限 {_BCRYPT_MAX_BYTES} 字节），请缩短后重试")
+    return pwd
 
 
 def _now_iso() -> str:
@@ -106,15 +150,18 @@ class AuthStore:
             row = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()
             return int(row["c"])
 
-    def create_user(self, username: str, password: str, role: int = ROLE_USER) -> dict:
-        username = (username or "").strip()
-        if not username:
-            raise ValueError("用户名不能为空")
-        if not password:
-            raise ValueError("密码不能为空")
+    def create_user(self, username: str, password: str, role: int = ROLE_USER,
+                    *, _bootstrap: bool = False) -> dict:
+        """创建用户。role=3 仅允许 ``bootstrap_admin`` 首次建站时经 ``_bootstrap`` 旁路创建；
+        其余任何入口（超管建用户、注册）都不能产生第二个超管。"""
+        username = validate_username(username)
+        password = validate_password(password)
         role = int(role)
         if role not in ROLE_NAMES:
             raise ValueError("角色非法，必须是 0/1/2/3")
+        if role == ROLE_SUPER and not _bootstrap:
+            # 硬约束：超级管理员全局唯一，禁止再建第二个（超管只能由 promote_super 禅让产生）
+            raise ValueError("超级管理员已存在且全局唯一，不能创建第二个超管；如需交接请由现任超管执行「禅让」")
         with self._lock, self._connect() as conn:
             existing = conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
             if existing:
@@ -149,13 +196,47 @@ class AuthStore:
         if role not in ROLE_NAMES:
             raise ValueError("角色非法，必须是 0/1/2/3")
         with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT role FROM users WHERE id=?", (user_id,)).fetchone()
+            if not row:
+                raise ValueError("用户不存在")
+            # 硬约束：谁都不能被直接改成超管（唯一超管只能由 promote_super 禅让产生）；
+            # 唯一超管也不能被降级（否则系统会陷入「零超管、无人可批 L3」的死锁）
+            if role == ROLE_SUPER:
+                raise ValueError("不能把用户直接提升为超级管理员；超管唯一，只能由现任超管执行「禅让」")
+            if row["role"] == ROLE_SUPER and role != ROLE_SUPER:
+                raise ValueError("不能降级唯一超级管理员；如需交接请先执行「禅让」")
             cur = conn.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
             conn.commit()
             return cur.rowcount > 0
 
+    def promote_super(self, old_super_id: str, successor_id: str) -> dict:
+        """超管禅让：唯一超管把身份移交指定用户，事务内原子完成。
+
+        旧超管降为管理员（role=2），继任者升为超管（role=3）。
+        同一事务提交，任何时刻库里都恰好有一个超管，不存在双超管或零超管窗口。
+        """
+        with self._lock, self._connect() as conn:
+            old_row = conn.execute("SELECT id, role FROM users WHERE id=?", (old_super_id,)).fetchone()
+            if not old_row:
+                raise ValueError("当前用户不存在")
+            if old_row["role"] != ROLE_SUPER:
+                raise ValueError("只有现任超级管理员才能执行禅让")
+            new_row = conn.execute("SELECT id, role FROM users WHERE id=?", (successor_id,)).fetchone()
+            if not new_row:
+                raise ValueError("继任用户不存在")
+            if successor_id == old_super_id:
+                raise ValueError("不能禅让给自己")
+            if new_row["role"] == ROLE_SUPER:
+                raise ValueError("继任者已是超级管理员")
+            conn.execute("UPDATE users SET role=? WHERE id=?", (ROLE_ADMIN, old_super_id))
+            conn.execute("UPDATE users SET role=? WHERE id=?", (ROLE_SUPER, successor_id))
+            # 禅让后旧超管的所有会话立即失效，防止其仍以超管身份残留操作
+            conn.execute("DELETE FROM sessions WHERE user_id=?", (old_super_id,))
+            conn.commit()
+        return self.get_user(successor_id)  # type: ignore[return-value]
+
     def update_user_password(self, user_id: str, new_password: str) -> bool:
-        if not new_password:
-            raise ValueError("密码不能为空")
+        new_password = validate_password(new_password)
         with self._lock, self._connect() as conn:
             cur = conn.execute(
                 "UPDATE users SET password_hash=? WHERE id=?", (hash_password(new_password), user_id)
@@ -228,12 +309,16 @@ class AuthStore:
             return cur.rowcount > 0
 
     def bootstrap_admin(self) -> dict | None:
-        """users 表为空时，从环境变量创建首个超管（默认 admin/admin123）。"""
+        """users 表为空时，从环境变量创建首个超管（默认 admin/admin123）。
+
+        唯一允许创建 role=3 的入口（``_bootstrap=True`` 旁路）：仅当库中尚无任何
+        用户时执行；此后超管只能通过 ``promote_super`` 禅让产生。
+        """
         if self.count_users() > 0:
             return None
         username = (os.getenv("ADMIN_USERNAME") or "admin").strip() or "admin"
         password = (os.getenv("ADMIN_PASSWORD") or "admin123").strip() or "admin123"
-        user = self.create_user(username, password, role=ROLE_SUPER)
+        user = self.create_user(username, password, role=ROLE_SUPER, _bootstrap=True)
         return user
 
 

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -106,6 +107,37 @@ def auth_login():
     return jsonify(result)
 
 
+@app.post("/api/auth/register")
+def auth_register():
+    """公开接口：开放注册，创建 role=1 普通用户（角色后续由超管分配）。
+
+    异常映射：开关关闭→403；限速→429；输入校验/重名→400；其余兜底 500。
+    注册请求体里的 role 字段一律忽略——提权只走超管分配，杜绝请求体传角色。
+    """
+    payload = _json_payload()
+    try:
+        user = auth_service.register(
+            payload.get("username", ""),
+            payload.get("password", ""),
+            payload.get("confirm", "") or payload.get("confirm_password", ""),
+        )
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 429
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify(debugging.error_payload(exc, context="auth_register")), 500
+    return jsonify({"user": user}), 201
+
+
+@app.get("/api/auth/register-status")
+def auth_register_status():
+    """公开接口：登录页据此决定是否展示「注册」入口。"""
+    return jsonify({"open": auth_service.register_open()})
+
+
 @app.post("/api/auth/logout")
 @require_auth
 def auth_logout():
@@ -155,6 +187,8 @@ def auth_users_create():
 @app.patch("/api/auth/users/<user_id>")
 @require_role(3)
 def auth_users_patch(user_id):
+    """改角色 / 重置密码。超管唯一约束由数据层硬保证：
+    不能把任何人升为超管、不能降级唯一超管（如需交接走 POST /api/auth/super/transfer）。"""
     payload = _json_payload()
     try:
         user = auth_service.update_user(
@@ -163,6 +197,24 @@ def auth_users_patch(user_id):
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"user": user})
+
+
+@app.post("/api/auth/super/transfer")
+@require_role(3)
+def auth_super_transfer():
+    """超管禅让：当前超管把唯一超管身份移交给指定用户（同事务原子完成）。
+
+    旧超管降为管理员且所有会话立即失效；继任者升为唯一超管。
+    """
+    payload = _json_payload()
+    successor_id = (payload.get("successor_id") or "").strip()
+    if not successor_id:
+        return jsonify({"error": "缺少 successor_id（继任用户 ID）。"}), 400
+    try:
+        user = auth_service.promote_super(g.current_user_id, successor_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"user": user, "transferred": True})
 
 
 @app.delete("/api/auth/users/<user_id>")
@@ -332,14 +384,59 @@ def writes_whitelist():
     return jsonify({"table_whitelist": write_gate.get_whitelist()})
 
 
+@app.put("/api/writes/whitelist")
+@require_role(3)
+def writes_whitelist_save():
+    """超管配置可写表白名单（运行时生效，无需重启）。
+
+    默认空名单 = 全部拒绝；只有这里显式开启的表，Agent 的 propose_write 才会受理。
+    body: {"table_whitelist": {"库名.表名": {"columns": ["允许列", ...]}}}
+    """
+    payload = _json_payload()
+    entries = payload.get("table_whitelist")
+    if entries is None:
+        entries = payload.get("tables")
+    try:
+        saved = write_gate.save_whitelist(
+            entries if isinstance(entries, dict) else {},
+            operator=g.current_user.get("username", ""),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"table_whitelist": saved})
+
+
 @app.post("/api/writes/<proposal_id>/decide")
 @require_auth
 def writes_decide(proposal_id):
-    """批准或拒绝一条写草案。按 required_role 鉴权（角色只从 token 反查）。"""
+    """批准或拒绝一条写草案。按 required_role 鉴权（角色只从 token 反查）。
+
+    边界：批准前先校验草案有效期——过期草案一律标记拒绝并返回 410，
+    绝不执行（防止「超管 2 小时未处理」的草案在几天后被补批落库）。
+    """
     payload = _json_payload()
     decision = (payload.get("decision") or "").strip().lower()
     if decision not in {"approve", "reject"}:
         return jsonify({"error": "decision 只能是 approve 或 reject"}), 400
+
+    if decision == "approve":
+        record = hitl.manager.get_record(proposal_id)
+        if not record or record.get("decision"):
+            return jsonify({"error": "草案不存在、已处理或已超时。"}), 404
+        my_role = int(g.current_user.get("role") or 0)
+        if my_role < int(record.get("required_role") or 1):
+            return jsonify({"error": f"写变更需角色≥{record.get('required_role')}审批。"}), 403
+        expires_at = (record.get("expires_at") or "").strip()
+        if expires_at and expires_at < datetime.now().strftime("%Y-%m-%dT%H:%M:%S"):
+            try:
+                hitl.manager.resolve(
+                    proposal_id, "reject", "草案已过期，未执行",
+                    None, user_id=g.current_user_id, user_role=my_role,
+                )
+            except (hitl.ApprovalError, ValueError):
+                pass
+            return jsonify({"error": "草案已过期，未执行任何变更。"}), 410
+
     try:
         result = hitl.manager.resolve(
             proposal_id,

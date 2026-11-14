@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { brand } from '../brand'
 
@@ -9,6 +9,59 @@ const username = ref('')
 const password = ref('')
 const busy = ref(false)
 const error = ref('')
+
+// 注册模式：与后端 auth_store.validate_username / validate_password 同规则的客户端预校验
+// （真正的边界以后端为准；这里只做即时提示，避免用户白提交）
+const mode = ref('login')
+const registerOpen = ref(true)
+const regUsername = ref('')
+const regPassword = ref('')
+const regConfirm = ref('')
+const regBusy = ref(false)
+const regError = ref('')
+
+const USERNAME_RE = /^(?=.*[\w一-龥])[\w\-一-龥]{3,32}$/
+
+function utf8Bytes(text) {
+  try { return new TextEncoder().encode(text).length } catch (_) { return text.length * 3 }
+}
+
+function validateRegister() {
+  const name = regUsername.value.trim()
+  if (!name) return '请填写用户名。'
+  if (name.length < 3) return '用户名至少 3 个字符。'
+  if (name.length > 32) return '用户名最多 32 个字符。'
+  if (!USERNAME_RE.test(name)) return '用户名只能包含中文、字母、数字、下划线或连字符。'
+  if (!regPassword.value || regPassword.value.trim().length < 6) return '密码至少 6 位。'
+  if (utf8Bytes(regPassword.value) > 72) return '密码过长（UTF-8 编码后不能超过 72 字节）。'
+  if (regPassword.value !== regConfirm.value) return '两次输入的密码不一致。'
+  return ''
+}
+
+async function submitRegister() {
+  regError.value = ''
+  const bad = validateRegister()
+  if (bad) { regError.value = bad; return }
+  regBusy.value = true
+  try {
+    await auth.register(regUsername.value.trim(), regPassword.value, regConfirm.value)
+    // 注册成功即自动登录；App.vue 监听 loggedIn 进入工作台
+  } catch (e) {
+    regError.value = e.message
+  } finally {
+    regBusy.value = false
+  }
+}
+
+function switchMode(next) {
+  mode.value = next
+  error.value = ''
+  regError.value = ''
+}
+
+onMounted(async () => {
+  registerOpen.value = await auth.registerOpen()
+})
 
 // 首次登录超管默认密码：提示改密
 const showChange = ref(false)
@@ -150,6 +203,33 @@ function cancelChange() {
         </div>
       </form>
 
+      <!-- 注册表单（普通用户自助注册，注册成功自动登录；角色固定为普通用户） -->
+      <form v-else-if="mode === 'register'" class="login-form" @submit.prevent="submitRegister">
+        <div class="login-change-title">
+          <b>注册新账号</b>
+          <small>注册后为普通用户，可使用查询与分析功能；更高角色由超级管理员分配</small>
+        </div>
+        <label class="login-field">
+          <span>用户名</span>
+          <input v-model="regUsername" type="text" autocomplete="username" placeholder="3–32 个字符，支持中文">
+        </label>
+        <label class="login-field">
+          <span>密码</span>
+          <input v-model="regPassword" type="password" autocomplete="new-password" placeholder="至少 6 位">
+        </label>
+        <label class="login-field">
+          <span>确认密码</span>
+          <input v-model="regConfirm" type="password" autocomplete="new-password" placeholder="再次输入密码">
+        </label>
+        <div v-if="regError" class="login-error">{{ regError }}</div>
+        <div class="login-actions">
+          <button type="submit" class="login-submit" :disabled="regBusy">
+            {{ regBusy ? '注册中…' : '注册并登录' }}
+          </button>
+          <button type="button" class="login-cancel" @click="switchMode('login')">返回登录</button>
+        </div>
+      </form>
+
       <!-- 登录表单 -->
       <form v-else class="login-form" @submit.prevent="submit">
         <label class="login-field">
@@ -166,6 +246,9 @@ function cancelChange() {
             {{ busy ? '登录中…' : '登录' }}
           </button>
         </div>
+        <p v-if="registerOpen" class="login-tip">
+          还没有账号？<button type="button" class="login-link" @click="switchMode('register')">注册一个</button>
+        </p>
         <p class="login-tip">首次启动默认超管账号见服务端配置（默认 admin / admin123），登录后请及时改密。</p>
       </form>
     </div>

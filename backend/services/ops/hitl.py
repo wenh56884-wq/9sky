@@ -332,9 +332,14 @@ class ApprovalManager:
             self._pending[ap.id] = ap
         return ap
 
-    def wait(self, request: PendingApproval) -> dict:
-        """阻塞等待审批决策；超时则自动拒绝。支持跨线程/重启后经库落盘的决策。"""
-        deadline = time.monotonic() + _timeout_seconds()
+    def wait(self, request: PendingApproval, timeout_seconds: float | None = None) -> dict:
+        """阻塞等待审批决策；超时则自动拒绝。支持跨线程/重启后经库落盘的决策。
+
+        timeout_seconds 为空时用 HITL_TIMEOUT_SECONDS（默认 300s）；写草案按自身
+        expires_at 传入剩余时长，避免「风险等级给了 2 小时、聊天流 5 分钟就判死」。
+        """
+        timeout = _timeout_seconds() if timeout_seconds is None else max(1.0, float(timeout_seconds))
+        deadline = time.monotonic() + timeout
         while True:
             if request.event.is_set():
                 return request.decision or {
@@ -467,6 +472,10 @@ class ApprovalManager:
         if not row or row.get("kind") != "write":
             return None
         return _safe_args(row.get("payload_json"))
+
+    def get_record(self, approval_id: str) -> dict | None:
+        """读取审批单原始记录（含 approver_id / decision / expires_at），用于审计与过期校验。"""
+        return self._store.load(approval_id)
 
     def summary(self) -> dict:
         with self._lock:

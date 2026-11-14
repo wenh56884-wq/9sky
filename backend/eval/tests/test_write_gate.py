@@ -203,3 +203,34 @@ def test_delete_with_where_passes():
     )
     assert result["ok"]
     assert result["risk"] == RISK_L1
+
+
+# ---- 超管运行时配置白名单（PUT /api/writes/whitelist 的服务层） ----
+def test_normalize_whitelist_rejects_bad_key():
+    with pytest.raises(ValueError, match="表名不合法"):
+        write_gate.normalize_whitelist({"customers": {"columns": []}})
+    with pytest.raises(ValueError, match="表名不合法"):
+        write_gate.normalize_whitelist({"db.customers; DROP": {"columns": []}})
+
+
+def test_normalize_whitelist_rejects_bad_columns():
+    with pytest.raises(ValueError, match="columns 必须是数组"):
+        write_gate.normalize_whitelist({"db.customers": {"columns": "a,b"}})
+    with pytest.raises(ValueError, match="列名不合法"):
+        write_gate.normalize_whitelist({"db.customers": {"columns": ["ok", "bad col"]}})
+
+
+def test_save_whitelist_persists_and_denies_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(write_gate, "WHITELIST_FILE", tmp_path / "write_whitelist.json")
+    # 保存后立即生效
+    saved = write_gate.save_whitelist({"telecom_operations_db.customers": {"columns": ["customer_status"]}})
+    assert "telecom_operations_db.customers" in saved
+    result = evaluate("UPDATE customers SET customer_status='停用' WHERE customer_id='C1'",
+                      database="telecom_operations_db", table="customers", estimated_rows=1)
+    assert result["ok"]
+    # 清空 → 全部拒绝
+    write_gate.save_whitelist({})
+    result = evaluate("UPDATE customers SET customer_status='停用' WHERE customer_id='C1'",
+                      database="telecom_operations_db", table="customers", estimated_rows=1)
+    assert not result["ok"]
+    assert "table_not_whitelisted" in result["hits"]

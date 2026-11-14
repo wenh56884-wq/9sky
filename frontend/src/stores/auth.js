@@ -87,6 +87,22 @@ export const useAuthStore = defineStore('auth', {
       return this.user
     },
 
+    // 开放注册（固定 role=1）：注册成功后自动登录，进入工作台
+    async register(username, password, confirm) {
+      await authApi.register(username, password, confirm)
+      return this.login(username, password)
+    },
+
+    // 注册入口是否开放（后端 REG_ENABLED 控制）
+    async registerOpen() {
+      try {
+        const data = await authApi.registerStatus()
+        return data.open !== false
+      } catch (_) {
+        return true
+      }
+    },
+
     // 刷新页面后校验本地令牌是否仍有效
     async refreshMe() {
       const data = await authApi.me()
@@ -142,6 +158,12 @@ export const useAuthStore = defineStore('auth', {
     },
     async deleteUser(id) {
       return authApi.deleteUser(id)
+    },
+
+    // 超管禅让：成功后本会话随即失效（后端删了旧超管全部会话）→ 清理本地并回登录页
+    async transferSuper(successorId) {
+      await authApi.transferSuper(successorId)
+      this.clear()
     },
   },
 })

@@ -69,6 +69,7 @@ from services.knowledge.rag import tokenize as rag_tokenize  # 中文友好的�
 
 from core.cognition import planning  # 规划引擎：任务拆解 / 执行自检 / 深度搜索拆解（Planning 模块）
 from core.cognition import prompting  # 提示词工程：查询意图结构化理解（Query Understanding）+ SQL / 回答清单
+from core.cognition import critic  # 答案批评家：终答前核对数字出处，防幻觉（Agent Critic）
 from core.cognition import reasoning  # 推理层：CoT / ToT 树状多路径 / MCTS 规划搜索 / Reflexion 反思记忆
 from core.cognition import context  # 上下文工程：提示分层合成 / 工具动态注册 / 检索上下文管线 / 上下文度量
 from services.datasource import tables  # 非结构化表格：把 非结构化数据/ 的 markdown/HTML 表格与 Excel/CSV 文件解析成可 SQL 查询的 SQLite
@@ -2939,6 +2940,30 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _seconds_until(iso_time: str | None) -> float | None:
+    """距 ISO 时间点还有多少秒（写草案等待审批用）；解析失败返回 None（走默认超时）。"""
+    if not iso_time:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return max(1.0, (datetime.strptime(iso_time, fmt) - datetime.now()).total_seconds())
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _user_name(user_id: str | None) -> str:
+    """按用户 ID 查用户名（审计留痕用）；查不到返回空串，不影响主流程。"""
+    if not user_id:
+        return ""
+    try:
+        from services.ops.auth_store import store as _auth_store
+        user = _auth_store.get_user(user_id)
+        return str((user or {}).get("username") or "")
+    except Exception:
+        return ""
+
+
 def _textify(content) -> str:
     """部分模型返回的是分块列表，统一转成纯文本。"""
     if isinstance(content, str):
@@ -4168,6 +4193,8 @@ class ChatService:
             provider = resolve_provider()
             # 上下文工程：本轮**只注册用得上的工具**（schema 是工具上下文里最占地方的一块）
             meter = context.Meter(label=str(thread_id))
+            # Critic 防幻觉素材：本轮每次工具调用记录 (工具名, 返回文本)，终答前交给 Critic 核对数字出处
+            critic_trace: list[dict] = []
             subset, meter.notes["tools"] = select_tools_for(str(question or ""))
             llm = build_llm(provider=provider, force=True).bind_tools(subset)
             fallback_used = False  # 同一次问答只自动切换一次渠道，避免来回横跳
@@ -4265,6 +4292,8 @@ class ChatService:
             tool_names: list[str] = []
             # 自检预算：只有“有计划的回合”才做自检，简单问题一次模型调用都不多花
             reflect_left = plan_max_reflect() if (plan is not None and plan_reflect_enabled()) else 0
+            # Critic 防幻觉预算：所有回合都查（数字幻觉不分任务大小），重答次数受 CRITIC_MAX_ROUNDS 限制
+            critic_left = critic.max_rounds() if critic.enabled() else 0
             # 本轮的反思记忆（Reflexion）：跨多次自检累积，第二次自检会带上第一次的建议
             reflexion = reasoning.Reflexion(getattr(plan, "goal", "") or question)
 
@@ -4335,6 +4364,35 @@ class ChatService:
                                         + "\n请继续完成剩余步骤，全部完成后再给出最终结果。"
                                     )))
                                     continue
+                            # ④-附 Critic 防幻觉终检（Reflexion 之后、交付之前）：
+                            # 核对回答里的具体数字是否都能在本轮工具结果中找到出处；
+                            # 判幻觉就撤回重答（预算 critic_left 次）。纯闲聊（无工具、无数字）
+                            # 跳过，不白花一次模型调用；Critic 自身故障时 fail-open 放行。
+                            answer_text = "".join(pending)
+                            if (critic_left > 0 and answer_text.strip()
+                                    and critic.worth_checking(answer_text, critic_trace)):
+                                report = critic.critique(
+                                    _llm_complete, str(question or ""),
+                                    answer_text, critic_trace,
+                                )
+                                meter.notes["critic"] = report.verdict
+                                if not report.ok:
+                                    critic_left -= 1
+                                    rewound = sum(len(p) for p in pending)
+                                    if rewound:
+                                        yield {"type": "rewind", "chars": rewound}
+                                        pending = []
+                                    problems = "；".join(
+                                        f"“{p.get('quote')}”{p.get('reason')}" for p in report.problems[:3]
+                                    )
+                                    # 修正指令只作为一次性提醒注入上下文，不写进历史
+                                    messages.append(HumanMessage(content=(
+                                        "【防幻觉核对】你刚才的回答被 Critic 判定存在无出处数字："
+                                        + problems
+                                        + "\n修正要求：" + (report.instruction or "删除或修正这些数字，如实说明数据缺失。")
+                                        + "\n请重新给出最终回答：只用工具结果里有出处的数字，查不到就直说。"
+                                    )))
+                                    continue
                             # 终答轮：正文已在流式过程中逐字发过，这里只汇总落盘
                             persisted.append(full)
                             if pending:
@@ -4386,17 +4444,29 @@ class ChatService:
                                     approval_obj = hitl.manager._pending.get(proposal["approval_id"])
                                     if approval_obj and operator_id:
                                         approval_obj.operator_id = operator_id
-                                    review = hitl.manager.wait(approval_obj) if approval_obj else {
+                                    # 等待时长按草案自身 expires_at 计算（L1 10min / L2 30min / L3 2h），
+                                    # 避免风险等级给了 2 小时、聊天流却固定 5 分钟就判超时
+                                    wait_seconds = _seconds_until(proposal.get("expires_at"))
+                                    review = hitl.manager.wait(
+                                        approval_obj, timeout_seconds=wait_seconds
+                                    ) if approval_obj else {
                                         "decision": "reject", "message": "审批单不存在"
                                     }
                                     w_decision = review.get("decision")
                                     if w_decision == "approve":
                                         from services.ops import write_executor
+                                        # 审计：批准人必须来自审批单（决策人），不能拿操作者顶替
+                                        record = hitl.manager.get_record(
+                                            proposal.get("approval_id", "")
+                                        ) or {}
+                                        approver_id = record.get("approver_id") or ""
                                         exec_result = write_executor.execute(
                                             proposal,
                                             approval_id=proposal.get("approval_id", ""),
                                             actor_id=operator_id or "",
-                                            approver_id=operator_id or "",
+                                            actor_name=_user_name(operator_id),
+                                            approver_id=approver_id,
+                                            approver_name=_user_name(approver_id),
                                         )
                                         yield {
                                             "type": "write_applied" if exec_result.get("ok") else "write_rejected",
@@ -4417,6 +4487,7 @@ class ChatService:
                                     }
                                 meter.record_tool(name, call.get("args") or {}, ok)
                                 meter.record_layer("tool_result", result)
+                                critic_trace.append({"name": name, "result": str(result)})
                                 tool_message = ToolMessage(
                                     content=str(result), tool_call_id=call.get("id")
                                 )
@@ -4453,6 +4524,7 @@ class ChatService:
                             # 上下文度量：工具调用质量（失败率 / 同参数重试率）
                             meter.record_tool(name, call.get("args") or {}, ok)
                             meter.record_layer("tool_result", result)
+                            critic_trace.append({"name": name, "result": str(result)})
                             tool_message = ToolMessage(content=str(result), tool_call_id=call.get("id"))
                             messages.append(tool_message)
                             persisted.append(tool_message)
